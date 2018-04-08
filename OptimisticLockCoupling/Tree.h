@@ -24,6 +24,15 @@ namespace ART_OLC {
         Epoche epoche{256};
 
     public:
+
+		// Dim STO
+		typedef struct trans_info {
+        	N* ins_node;        // the node where the record will be inserted
+	        uint8_t key_ind;    // the key index to insert
+         	N* l_node;          // the locked node
+         	N* l_parent_node;   // the locked parent node
+     	} trans_info;
+
         enum class CheckPrefixResult : uint8_t {
             Match,
             NoMatch,
@@ -74,6 +83,9 @@ namespace ART_OLC {
                          std::size_t &resultCount, ThreadInfo &threadEpocheInfo) const;
 
         void insert(const Key &k, TID tid, ThreadInfo &epocheInfo);
+
+		// Dim STO: insert function to provide transactinal information for STO
+		void insert(const Key &k, TID tid, ThreadInfo &epocheInfo, trans_info* t_info);
 
         void remove(const Key &k, TID tid, ThreadInfo &epocheInfo);
     };
