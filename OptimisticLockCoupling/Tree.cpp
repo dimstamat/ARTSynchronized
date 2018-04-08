@@ -441,7 +441,7 @@ namespace ART_OLC {
             if (nextNode == nullptr) {
 				PRINT_DEBUG("Next node is null, insert!\n")
 				// Dim STO: Do not unlock yet!
-                N::insertAndUnlock(node, v, parentNode, parentVersion, parentKey, nodeKey, N::setLeaf(tid), needRestart, epocheInfo);
+                N::insert(node, v, parentNode, parentVersion, parentKey, nodeKey, N::setLeaf(tid), needRestart, !transactional, epocheInfo);
                 if (needRestart) goto restart;
                 return;
             }
