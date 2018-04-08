@@ -20,5 +20,8 @@ target_link_libraries(ARTSynchronized ${TbbLib} ${JemallocLib} ${CMAKE_THREAD_LI
 
 
 set(SOURCE_FILES example.cpp)
+set(SOURCE_FILES test_simple.cpp)
 add_executable(example ${SOURCE_FILES})
+add_executable(test_simple ${SOURCE_FILES})
 target_link_libraries(example ARTSynchronized)
+target_link_libraries(test_simple ARTSynchronized)
