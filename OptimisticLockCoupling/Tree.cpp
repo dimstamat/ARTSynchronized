@@ -443,7 +443,12 @@ namespace ART_OLC {
 				// Dim STO: Do not unlock yet!
                 N::insert(node, v, parentNode, parentVersion, parentKey, nodeKey, N::setLeaf(tid), needRestart, !transactional, epocheInfo);
                 if (needRestart) goto restart;
-                return;
+                if(transactional){
+					t_info->l_node = node;
+					if(parentNode)
+						t_info->l_parent_node = parentNode;
+				}
+				return;
             }
 
             if (parentNode != nullptr) {
