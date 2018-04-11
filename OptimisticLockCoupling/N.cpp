@@ -281,6 +281,8 @@ namespace ART_OLC {
         //return version;
     }
 
+	
+
     bool N::isObsolete(uint64_t version) {
         return (version & 1) == 1;
     }
@@ -292,6 +294,11 @@ namespace ART_OLC {
     void N::readUnlockOrRestart(uint64_t startRead, bool &needRestart) const {
         needRestart = (startRead != typeVersionLockObsolete.load());
     }
+
+	// Dim: We need the node version number for Sto node set
+	uint64_t N::getVersion() {
+		return typeVersionLockObsolete.load();
+	}
 
     uint32_t N::getPrefixLength() const {
         return prefixCount;

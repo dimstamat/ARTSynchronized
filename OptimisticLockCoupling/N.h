@@ -80,6 +80,9 @@ namespace ART_OLC {
         void checkOrRestart(uint64_t startRead, bool &needRestart) const;
         void readUnlockOrRestart(uint64_t startRead, bool &needRestart) const;
 
+		// Dim: We need the node version number for Sto node set
+		uint64_t getVersion();
+
         static bool isObsolete(uint64_t version);
 
         /**
