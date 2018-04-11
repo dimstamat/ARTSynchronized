@@ -10,6 +10,16 @@ using namespace ART;
 
 namespace ART_OLC {
 
+	// Dim STO
+	typedef struct trans_info {
+		N* ins_node;            // the node where the record will be inserted
+		uint64_t ins_node_vers; // the version number (AVN) of the node before the insert
+		uint8_t key_ind;        // the key index to insert
+		N* l_node;              // the locked node
+		N* l_parent_node;       // the locked parent node
+	} trans_info;
+
+
     class Tree {
     public:
         using LoadKeyFunction = void (*)(TID tid, Key &key);
@@ -24,14 +34,6 @@ namespace ART_OLC {
         Epoche epoche{256};
 
     public:
-
-		// Dim STO
-		typedef struct trans_info {
-        	N* ins_node;        // the node where the record will be inserted
-	        uint8_t key_ind;    // the key index to insert
-         	N* l_node;          // the locked node
-         	N* l_parent_node;   // the locked parent node
-     	} trans_info;
 
         enum class CheckPrefixResult : uint8_t {
             Match,

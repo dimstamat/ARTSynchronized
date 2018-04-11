@@ -368,8 +368,7 @@ namespace ART_OLC {
 
 		PRINT_DEBUG("-------------------------\nInserting %s\n", keyToStr(k).c_str());
 
-		if(t_info != nullptr)
-			transactional = true;
+		transactional = t_info != nullptr;
         while (true) {
             parentNode = node;
             parentKey = nodeKey;
@@ -407,6 +406,7 @@ namespace ART_OLC {
 						newNode->insert(k[nextLevel], N::setLeaf(tid));
 					else {
 						t_info->ins_node = newNode;
+						t_info->ins_node_vers = newNode->getVersion();
 						t_info->key_ind = k[nextLevel];
 					}
                     newNode->insert(nonMatchingKey, node);
@@ -440,8 +440,10 @@ namespace ART_OLC {
 			PRINT_DEBUG("Keyslice at current level: %c\n", (char) nodeKey)
             if (nextNode == nullptr) {
 				PRINT_DEBUG("Next node is null, insert!\n")
+				if(transactional)
+					t_info->ins_node_vers = node->getVersion();
 				// Dim STO: Do not unlock yet!
-                N::insert(node, v, parentNode, parentVersion, parentKey, nodeKey, N::setLeaf(tid), needRestart, !transactional, epocheInfo);
+                N::insert(node, v, parentNode, parentVersion, parentKey, nodeKey, N::setLeaf(tid), needRestart, t_info, epocheInfo);
                 if (needRestart) goto restart;
                 if(transactional){
 					t_info->l_node = node;

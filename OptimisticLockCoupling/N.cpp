@@ -90,17 +90,27 @@ namespace ART_OLC {
     }
 
     template<typename curN, typename biggerN>
-    void N::insertGrow(curN *n, uint64_t v, N *parentNode, uint64_t parentVersion, uint8_t keyParent, uint8_t key, N *val, bool &needRestart, bool writeUnlock, ThreadInfo &threadInfo) {
-        if (!n->isFull()) {
+    void N::insertGrow(curN *n, uint64_t v, N *parentNode, uint64_t parentVersion, uint8_t keyParent, uint8_t key, N *val, bool &needRestart, trans_info* t_info, ThreadInfo &threadInfo) {
+        bool transactional = t_info != nullptr;
+		if (!n->isFull()) {
             if (parentNode != nullptr) {
                 parentNode->readUnlockOrRestart(parentVersion, needRestart);
                 if (needRestart) return;
             }
             n->upgradeToWriteLockOrRestart(v, needRestart);
             if (needRestart) return;
-            n->insert(key, val);
-            if(writeUnlock)
+            // Dim: If transactional (writeUnlock=false), do not insert now! We will isnert later that we will have the record*
+			if(!transactional)
+				n->insert(key, val);
+			else {
+				t_info->ins_node = n;
+				t_info->key_ind = key;
+				t_info->ins_node_vers = n->getVersion();
+			}
+            if(!transactional)
 				n->writeUnlock();
+			else
+				t_info->l_node = n;
             return;
         }
 
@@ -115,36 +125,45 @@ namespace ART_OLC {
 
         auto nBig = new biggerN(n->getPrefix(), n->getPrefixLength());
         n->copyTo(nBig);
-        nBig->insert(key, val);
-
+		if(!transactional)
+        	nBig->insert(key, val);
+		else{
+			t_info->ins_node = nBig;
+			t_info->ins_node_vers = nBig->getVersion();
+			t_info->key_ind = key;
+		}
         N::change(parentNode, keyParent, nBig);
-		if(writeUnlock)
+		if(!t_info)
         	n->writeUnlockObsolete();
+		else
+			t_info->l_node = n;
         threadInfo.getEpoche().markNodeForDeletion(n, threadInfo);
-        if(writeUnlock)
+        if(!t_info)
 			parentNode->writeUnlock();
+		else
+			t_info->l_parent_node = parentNode;
     }
 
-    void N::insert(N *node, uint64_t v, N *parentNode, uint64_t parentVersion, uint8_t keyParent, uint8_t key, N *val, bool &needRestart, bool writeUnlock, ThreadInfo &threadInfo) {
+    void N::insert(N *node, uint64_t v, N *parentNode, uint64_t parentVersion, uint8_t keyParent, uint8_t key, N *val, bool &needRestart, trans_info* t_info, ThreadInfo &threadInfo) {
         switch (node->getType()) {
             case NTypes::N4: {
                 auto n = static_cast<N4 *>(node);
-                insertGrow<N4, N16>(n, v, parentNode, parentVersion, keyParent, key, val, needRestart, writeUnlock, threadInfo);
+                insertGrow<N4, N16>(n, v, parentNode, parentVersion, keyParent, key, val, needRestart, t_info, threadInfo);
                 break;
             }
             case NTypes::N16: {
                 auto n = static_cast<N16 *>(node);
-                insertGrow<N16, N48>(n, v, parentNode, parentVersion, keyParent, key, val, needRestart, writeUnlock, threadInfo);
+                insertGrow<N16, N48>(n, v, parentNode, parentVersion, keyParent, key, val, needRestart, t_info, threadInfo);
                 break;
             }
             case NTypes::N48: {
                 auto n = static_cast<N48 *>(node);
-                insertGrow<N48, N256>(n, v, parentNode, parentVersion, keyParent, key, val, needRestart, writeUnlock, threadInfo);
+                insertGrow<N48, N256>(n, v, parentNode, parentVersion, keyParent, key, val, needRestart, t_info, threadInfo);
                 break;
             }
             case NTypes::N256: {
                 auto n = static_cast<N256 *>(node);
-                insertGrow<N256, N256>(n, v, parentNode, parentVersion, keyParent, key, val, needRestart, writeUnlock, threadInfo);
+                insertGrow<N256, N256>(n, v, parentNode, parentVersion, keyParent, key, val, needRestart, t_info, threadInfo);
                 break;
             }
         }

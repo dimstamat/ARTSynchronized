@@ -11,6 +11,7 @@
 #include <string.h>
 #include "../Key.h"
 #include "../Epoche.h"
+#include "Tree.h"
 
 using TID = uint64_t;
 
@@ -60,6 +61,8 @@ namespace ART_OLC {
 
     public:
 
+		typedef struct trans_info trans_info;
+
         NTypes getType() const;
 
         uint32_t getCount() const;
@@ -95,7 +98,7 @@ namespace ART_OLC {
         static N *getChild(const uint8_t k, const N *node);
 
         static void insert(N *node, uint64_t v, N *parentNode, uint64_t parentVersion, uint8_t keyParent, uint8_t key, N *val, bool &needRestart,
-                                    bool writeUnlock, ThreadInfo &threadInfo);
+                                    trans_info* t_info, ThreadInfo &threadInfo);
 
         static bool change(N *node, uint8_t key, N *val);
 
@@ -128,7 +131,7 @@ namespace ART_OLC {
         static std::tuple<N *, uint8_t> getSecondChild(N *node, const uint8_t k);
 
         template<typename curN, typename biggerN>
-        static void insertGrow(curN *n, uint64_t v, N *parentNode, uint64_t parentVersion, uint8_t keyParent, uint8_t key, N *val, bool &needRestart, bool writeUnlock, ThreadInfo &threadInfo);
+        static void insertGrow(curN *n, uint64_t v, N *parentNode, uint64_t parentVersion, uint8_t keyParent, uint8_t key, N *val, bool &needRestart, trans_info* t_info, ThreadInfo &threadInfo);
 
         template<typename curN, typename smallerN>
         static void removeAndShrink(curN *n, uint64_t v, N *parentNode, uint64_t parentVersion, uint8_t keyParent, uint8_t key, bool &needRestart, ThreadInfo &threadInfo);
