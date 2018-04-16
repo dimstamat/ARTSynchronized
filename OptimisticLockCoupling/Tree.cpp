@@ -29,7 +29,11 @@ namespace ART_OLC {
         return ThreadInfo(this->epoche);
     }
 
-    TID Tree::lookup(const Key &k, ThreadInfo &threadEpocheInfo) const {
+	TID Tree::lookup(const Key &k, ThreadInfo &threadEpocheInfo) const {
+		return lookup(k, threadEpocheInfo, nullptr);
+	}
+
+    TID Tree::lookup(const Key &k, ThreadInfo &threadEpocheInfo, trans_info* t_info) const {
         EpocheGuardReadonly epocheGuard(threadEpocheInfo);
         restart:
         bool needRestart = false;
@@ -39,6 +43,7 @@ namespace ART_OLC {
         uint64_t v;
         uint32_t level = 0;
         bool optimisticPrefixMatch = false;
+		bool transactional = t_info != nullptr;
 
         node = root;
         v = node->readLockOrRestart(needRestart);
@@ -48,12 +53,23 @@ namespace ART_OLC {
                 case CheckPrefixResult::NoMatch:
                     node->readUnlockOrRestart(v, needRestart);
                     if (needRestart) goto restart;
+					PRINT_DEBUG("No match!\n")
+					if(transactional){
+						t_info->cur_node = node;
+						t_info->cur_node_vers = node->getVersion();
+						PRINT_DEBUG("No match!\n")
+					}
                     return 0;
                 case CheckPrefixResult::OptimisticMatch:
                     optimisticPrefixMatch = true;
                     // fallthrough
                 case CheckPrefixResult::Match:
                     if (k.getKeyLen() <= level) {
+						//TODO: Check if required to add in the node set here!
+						if(transactional){
+							t_info->cur_node = node;
+							t_info->cur_node_vers = node->getVersion();
+						}
                         return 0;
                     }
                     parentNode = node;
@@ -62,6 +78,10 @@ namespace ART_OLC {
                     if (needRestart) goto restart;
 
                     if (node == nullptr) {
+						if(transactional){ // current node is null, add the parent node! (The node that would contain that key,val)
+							t_info->cur_node = parentNode;
+							t_info->cur_node_vers = parentNode->getVersion();
+						}
                         return 0;
                     }
                     if (N::isLeaf(node)) {
@@ -340,7 +360,7 @@ namespace ART_OLC {
         return 0;
     }
 
-    string keyToStr(const Key &k){
+    string Tree::keyToStr(const Key &k){
 		string res="";
 		for(unsigned i=0; i<k.getKeyLen(); i++){
 			res += (char)k[i];
@@ -366,7 +386,7 @@ namespace ART_OLC {
 
 		bool transactional = false;
 
-		PRINT_DEBUG("-------------------------\nInserting %s\n", keyToStr(k).c_str());
+		PRINT_DEBUG("-------------------------\nInserting (key:%s, tid: %lu)\n", keyToStr(k).c_str(), tid);
 
 		transactional = t_info != nullptr;
         while (true) {
@@ -374,7 +394,9 @@ namespace ART_OLC {
             parentKey = nodeKey;
             node = nextNode;
             auto v = node->readLockOrRestart(needRestart);
-            if (needRestart) goto restart;
+			PRINT_DEBUG("Is node locked? %u\n", node->isLocked(node->getVersion()))
+			if (needRestart)
+				goto restart;
 
             uint32_t nextLevel = level;
 
@@ -389,8 +411,9 @@ namespace ART_OLC {
                 case CheckPrefixPessimisticResult::NoMatch: {
                     PRINT_DEBUG("Prefix mismatch!\n")
 					parentNode->upgradeToWriteLockOrRestart(parentVersion, needRestart);
-                    if (needRestart) goto restart;
-
+                    PRINT_DEBUG("-- Locking parent node %p\n", parentNode);
+					if (needRestart) goto restart;
+					PRINT_DEBUG("-- Locking node %p\n", node);
                     node->upgradeToWriteLockOrRestart(v, needRestart);
                     if (needRestart) {
                         parentNode->writeUnlock();
@@ -405,8 +428,8 @@ namespace ART_OLC {
 					if(!transactional)
 						newNode->insert(k[nextLevel], N::setLeaf(tid));
 					else {
-						t_info->ins_node = newNode;
-						t_info->ins_node_vers = newNode->getVersion();
+						t_info->cur_node = newNode;
+						t_info->cur_node_vers = newNode->getVersion();
 						t_info->key_ind = k[nextLevel];
 					}
                     newNode->insert(nonMatchingKey, node);
@@ -441,14 +464,15 @@ namespace ART_OLC {
             if (nextNode == nullptr) {
 				PRINT_DEBUG("Next node is null, insert!\n")
 				if(transactional)
-					t_info->ins_node_vers = node->getVersion();
+					t_info->cur_node_vers = node->getVersion();
 				// Dim STO: Do not unlock yet!
                 N::insert(node, v, parentNode, parentVersion, parentKey, nodeKey, N::setLeaf(tid), needRestart, t_info, epocheInfo);
                 if (needRestart) goto restart;
                 if(transactional){
 					t_info->l_node = node;
-					if(parentNode)
+					if(t_info->l_parent_node) {
 						t_info->l_parent_node = parentNode;
+					}
 				}
 				return;
             }
@@ -461,9 +485,9 @@ namespace ART_OLC {
 
             if (N::isLeaf(nextNode)) {
 				PRINT_DEBUG("Next node is leaf, expand it!\n")
-                node->upgradeToWriteLockOrRestart(v, needRestart);
+                PRINT_DEBUG("-- Locking node %p\n", node);
+				node->upgradeToWriteLockOrRestart(v, needRestart);
                 if (needRestart) goto restart;
-
                 Key key;
                 loadKey(N::getLeaf(nextNode), key);
 
@@ -485,7 +509,7 @@ namespace ART_OLC {
 				if(!transactional)
 					n4->insert(k[level + prefixLength], N::setLeaf(tid));
 				else {
-					t_info->ins_node = n4;
+					t_info->cur_node = n4;
 					t_info->key_ind = k[level + prefixLength];
 				}
 				// Dimos: Must check whether level is within the key bounds!
