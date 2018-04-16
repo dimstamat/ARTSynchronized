@@ -7,6 +7,14 @@
 #include "N48.cpp"
 #include "N256.cpp"
 
+#define DIM_DEBUG_NODE 1
+#if DIM_DEBUG_NODE == 1
+    #define PRINT_DEBUG_NODE(...) printf(__VA_ARGS__);
+#else
+    #define PRINT_DEBUG_NODE(...)  
+#endif
+
+
 namespace ART_OLC {
 
     void N::setType(NTypes type) {
@@ -97,26 +105,33 @@ namespace ART_OLC {
                 parentNode->readUnlockOrRestart(parentVersion, needRestart);
                 if (needRestart) return;
             }
+			PRINT_DEBUG_NODE("-- (insertGrow): Locking node %p\n", n)
             n->upgradeToWriteLockOrRestart(v, needRestart);
-            if (needRestart) return;
+            if (needRestart) {
+				printf("Needs restart!\n");
+				return;
+			}
             // Dim: If transactional (writeUnlock=false), do not insert now! We will isnert later that we will have the record*
 			if(!transactional)
 				n->insert(key, val);
 			else {
-				t_info->ins_node = n;
+				t_info->cur_node = n;
+				t_info->cur_node_vers = n->getVersion();
 				t_info->key_ind = key;
-				t_info->ins_node_vers = n->getVersion();
 			}
             if(!transactional)
 				n->writeUnlock();
-			else
+			else{
+				PRINT_DEBUG_NODE("Mark node for later unlock!\n")
 				t_info->l_node = n;
+			}
             return;
         }
-
+		PRINT_DEBUG_NODE("Growing node!\n")
+		PRINT_DEBUG_NODE("-- Locking parent node %p\n", parentNode)
         parentNode->upgradeToWriteLockOrRestart(parentVersion, needRestart);
         if (needRestart) return;
-
+		PRINT_DEBUG_NODE("-- Locking node %p\n", n)
         n->upgradeToWriteLockOrRestart(v, needRestart);
         if (needRestart) {
             parentNode->writeUnlock();
@@ -128,8 +143,8 @@ namespace ART_OLC {
 		if(!transactional)
         	nBig->insert(key, val);
 		else{
-			t_info->ins_node = nBig;
-			t_info->ins_node_vers = nBig->getVersion();
+			t_info->cur_node = nBig;
+			t_info->cur_node_vers = nBig->getVersion();
 			t_info->key_ind = key;
 		}
         N::change(parentNode, keyParent, nBig);
