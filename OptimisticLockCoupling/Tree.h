@@ -6,17 +6,19 @@
 #define ART_OPTIMISTICLOCK_COUPLING_N_H
 #include "N.h"
 
+#include <string>
+
 using namespace ART;
 
 namespace ART_OLC {
 
 	// Dim STO
 	typedef struct trans_info {
-		N* ins_node;            // the node where the record will be inserted
-		uint64_t ins_node_vers; // the version number (AVN) of the node before the insert
-		uint8_t key_ind;        // the key index to insert
-		N* l_node;              // the locked node
-		N* l_parent_node;       // the locked parent node
+		N* cur_node;            // the node where the record should live (inserted or looked up)
+		uint64_t cur_node_vers; // the version number (AVN) of the node where the record should live (before the insert, or look up)
+		uint8_t key_ind;        // the key index to insert 	(inserts only)
+		N* l_node;              // the locked node			(inserts only)
+		N* l_parent_node;       // the locked parent node	(inserts only)
 	} trans_info;
 
 
@@ -27,9 +29,14 @@ namespace ART_OLC {
     private:
         N *const root;
 
-        TID checkKey(const TID tid, const Key &k) const;
+	// Dim: Testing
+	protected:
+		LoadKeyFunction loadKey;
+	
+	private:
+		
 
-        LoadKeyFunction loadKey;
+        TID checkKey(const TID tid, const Key &k) const;
 
         Epoche epoche{256};
 
@@ -56,6 +63,10 @@ namespace ART_OLC {
             Contained,
             NoMatch
         };
+
+		// Dim: for debugging:
+		std::string keyToStr(const Key &k);
+
         static CheckPrefixResult checkPrefix(N* n, const Key &k, uint32_t &level);
 
         static CheckPrefixPessimisticResult checkPrefixPessimistic(N *n, const Key &k, uint32_t &level,
@@ -80,6 +91,8 @@ namespace ART_OLC {
         ThreadInfo getThreadInfo();
 
         TID lookup(const Key &k, ThreadInfo &threadEpocheInfo) const;
+		// Dim: For transactional ART
+		TID lookup(const Key &k, ThreadInfo &threadEpocheInfo, trans_info* t_info) const;
 
         bool lookupRange(const Key &start, const Key &end, Key &continueKey, TID result[], std::size_t resultLen,
                          std::size_t &resultCount, ThreadInfo &threadEpocheInfo) const;
