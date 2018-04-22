@@ -7,7 +7,7 @@
 #include "N48.cpp"
 #include "N256.cpp"
 
-#define DIM_DEBUG_NODE 1
+#define DIM_DEBUG_NODE 0
 #if DIM_DEBUG_NODE == 1
     #define PRINT_DEBUG_NODE(...) printf(__VA_ARGS__);
 #else
@@ -108,7 +108,7 @@ namespace ART_OLC {
 			PRINT_DEBUG_NODE("-- (insertGrow): Locking node %p\n", n)
             n->upgradeToWriteLockOrRestart(v, needRestart);
             if (needRestart) {
-				printf("Needs restart!\n");
+				PRINT_DEBUG_NODE("Needs restart!\n")
 				return;
 			}
             // Dim: If transactional (writeUnlock=false), do not insert now! We will isnert later that we will have the record*
@@ -148,15 +148,15 @@ namespace ART_OLC {
 			t_info->key_ind = key;
 		}
         N::change(parentNode, keyParent, nBig);
-		if(!t_info)
+		if(!t_info){
         	n->writeUnlockObsolete();
-		else
-			t_info->l_node = n;
-        threadInfo.getEpoche().markNodeForDeletion(n, threadInfo);
-        if(!t_info)
+			threadInfo.getEpoche().markNodeForDeletion(n, threadInfo);
 			parentNode->writeUnlock();
-		else
+		}
+		else{
+			t_info->l_node = n;
 			t_info->l_parent_node = parentNode;
+		}
     }
 
     void N::insert(N *node, uint64_t v, N *parentNode, uint64_t parentVersion, uint8_t keyParent, uint8_t key, N *val, bool &needRestart, trans_info* t_info, ThreadInfo &threadInfo) {
@@ -238,8 +238,8 @@ namespace ART_OLC {
     }
 
     template<typename curN, typename smallerN>
-    void N::removeAndShrink(curN *n, uint64_t v, N *parentNode, uint64_t parentVersion, uint8_t keyParent, uint8_t key, bool &needRestart, ThreadInfo &threadInfo) {
-        if (!n->isUnderfull() || parentNode == nullptr) {
+    void N::removeAndShrink(curN *n, uint64_t v, N *parentNode, uint64_t parentVersion, uint8_t keyParent, uint8_t key, bool &needRestart, trans_info* t_info, ThreadInfo &threadInfo) {
+		if (!n->isUnderfull() || parentNode == nullptr) {
             if (parentNode != nullptr) {
                 parentNode->readUnlockOrRestart(parentVersion, needRestart);
                 if (needRestart) return;
@@ -247,8 +247,16 @@ namespace ART_OLC {
             n->upgradeToWriteLockOrRestart(v, needRestart);
             if (needRestart) return;
 
-            n->remove(key);
-            n->writeUnlock();
+			if(!t_info){
+            	n->remove(key);
+            	n->writeUnlock();
+			}
+			else {
+				t_info->cur_node = n;
+				t_info->cur_node_vers = n->getVersion();
+				t_info->key_ind = key;
+				t_info->l_node = n;
+			}
             return;
         }
         parentNode->upgradeToWriteLockOrRestart(parentVersion, needRestart);
@@ -263,34 +271,46 @@ namespace ART_OLC {
         auto nSmall = new smallerN(n->getPrefix(), n->getPrefixLength());
 
         n->copyTo(nSmall);
-        nSmall->remove(key);
+        if(!t_info)
+			nSmall->remove(key);
+		else{
+			t_info->cur_node = nSmall;
+			t_info->cur_node_vers = nSmall->getVersion();
+			t_info->key_ind = key;
+		}
         N::change(parentNode, keyParent, nSmall);
-
-        n->writeUnlockObsolete();
-        threadInfo.getEpoche().markNodeForDeletion(n, threadInfo);
-        parentNode->writeUnlock();
+		if(!t_info) {
+        	n->writeUnlockObsolete();
+        	threadInfo.getEpoche().markNodeForDeletion(n, threadInfo);
+        	parentNode->writeUnlock();
+		}
+		else {
+			t_info->l_node = n;
+			t_info->l_parent_node = parentNode;
+			t_info->mark_for_deletion = n;
+		}
     }
 
-    void N::removeAndUnlock(N *node, uint64_t v, uint8_t key, N *parentNode, uint64_t parentVersion, uint8_t keyParent, bool &needRestart, ThreadInfo &threadInfo) {
+    void N::remove(N *node, uint64_t v, uint8_t key, N *parentNode, uint64_t parentVersion, uint8_t keyParent, bool &needRestart, trans_info* t_info, ThreadInfo &threadInfo) {
         switch (node->getType()) {
             case NTypes::N4: {
                 auto n = static_cast<N4 *>(node);
-                removeAndShrink<N4, N4>(n, v, parentNode, parentVersion, keyParent, key, needRestart, threadInfo);
+                removeAndShrink<N4, N4>(n, v, parentNode, parentVersion, keyParent, key, needRestart, t_info, threadInfo);
                 break;
             }
             case NTypes::N16: {
                 auto n = static_cast<N16 *>(node);
-                removeAndShrink<N16, N4>(n, v, parentNode, parentVersion, keyParent, key, needRestart, threadInfo);
+                removeAndShrink<N16, N4>(n, v, parentNode, parentVersion, keyParent, key, needRestart, t_info, threadInfo);
                 break;
             }
             case NTypes::N48: {
                 auto n = static_cast<N48 *>(node);
-                removeAndShrink<N48, N16>(n, v, parentNode, parentVersion, keyParent, key, needRestart, threadInfo);
+                removeAndShrink<N48, N16>(n, v, parentNode, parentVersion, keyParent, key, needRestart, t_info, threadInfo);
                 break;
             }
             case NTypes::N256: {
                 auto n = static_cast<N256 *>(node);
-                removeAndShrink<N256, N48>(n, v, parentNode, parentVersion, keyParent, key, needRestart, threadInfo);
+                removeAndShrink<N256, N48>(n, v, parentNode, parentVersion, keyParent, key, needRestart, t_info, threadInfo);
                 break;
             }
         }

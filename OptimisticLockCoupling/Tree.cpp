@@ -8,7 +8,7 @@
 using namespace std;
 #include <iostream>
 
-#define DIM_DEBUG 1
+#define DIM_DEBUG 0
 #if DIM_DEBUG == 1
 	#define PRINT_DEBUG(...) printf(__VA_ARGS__);
 #else
@@ -530,8 +530,13 @@ namespace ART_OLC {
         }
     }
 
-    void Tree::remove(const Key &k, TID tid, ThreadInfo &threadInfo) {
+	void Tree::remove(const Key &k, TID tid, ThreadInfo &threadInfo){
+		remove(k, tid, threadInfo, nullptr);
+	}
+
+    void Tree::remove(const Key &k, TID tid, ThreadInfo &threadInfo, trans_info* t_info) {
         EpocheGuard epocheGuard(threadInfo);
+		bool transactional = t_info != nullptr;
         restart:
         bool needRestart = false;
 
@@ -590,9 +595,16 @@ namespace ART_OLC {
                                 //N::remove(node, k[level]); not necessary
                                 N::change(parentNode, parentKey, secondNodeN);
 
-                                parentNode->writeUnlock();
-                                node->writeUnlockObsolete();
-                                this->epoche.markNodeForDeletion(node, threadInfo);
+								if(!transactional){
+                                	parentNode->writeUnlock();
+                                	node->writeUnlockObsolete();
+                                	this->epoche.markNodeForDeletion(node, threadInfo);
+								}
+								else {
+									t_info->l_node = node;
+									t_info->l_parent_node = parentNode;
+									t_info->mark_for_deletion = node;
+								}
                             } else {
                                 secondNodeN->writeLockOrRestart(needRestart);
                                 if (needRestart) {
@@ -603,16 +615,27 @@ namespace ART_OLC {
 
                                 //N::remove(node, k[level]); not necessary
                                 N::change(parentNode, parentKey, secondNodeN);
-                                parentNode->writeUnlock();
-
+                                if(!transactional){
+									parentNode->writeUnlock();
+								}
+								else{
+									t_info->l_parent_node = parentNode;
+								}
+								// Can this happen now, or should it happen at commit time?
                                 secondNodeN->addPrefixBefore(node, secondNodeK);
-                                secondNodeN->writeUnlock();
-
-                                node->writeUnlockObsolete();
-                                this->epoche.markNodeForDeletion(node, threadInfo);
+                                if(!transactional){
+									secondNodeN->writeUnlock();
+									node->writeUnlockObsolete();
+									this->epoche.markNodeForDeletion(node, threadInfo);
+								}
+								else {
+									t_info->l_second_node = secondNodeN;
+									t_info->l_node = node;
+									t_info->mark_for_deletion = node;
+								}
                             }
                         } else {
-                            N::removeAndUnlock(node, v, k[level], parentNode, parentVersion, parentKey, needRestart, threadInfo);
+                            N::remove(node, v, k[level], parentNode, parentVersion, parentKey, needRestart, t_info, threadInfo);
                             if (needRestart) goto restart;
                         }
                         return;
