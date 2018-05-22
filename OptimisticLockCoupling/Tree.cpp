@@ -34,7 +34,7 @@ namespace ART_OLC {
 	}
 
     TID Tree::lookup(const Key &k, ThreadInfo &threadEpocheInfo, trans_info* t_info) const {
-        EpocheGuardReadonly epocheGuard(threadEpocheInfo);
+		EpocheGuardReadonly epocheGuard(threadEpocheInfo);
         restart:
         bool needRestart = false;
 
@@ -57,23 +57,29 @@ namespace ART_OLC {
 					if(transactional){
 						t_info->cur_node = node;
 						t_info->cur_node_vers = node->getVersion();
-						PRINT_DEBUG("No match!\n")
 					}
                     return 0;
                 case CheckPrefixResult::OptimisticMatch:
                     optimisticPrefixMatch = true;
                     // fallthrough
                 case CheckPrefixResult::Match:
-                    if (k.getKeyLen() <= level) {
+                    uint8_t keyslice = k[level];
+					if (k.getKeyLen() <= level) {
 						//TODO: Check if required to add in the node set here!
-						if(transactional){
-							t_info->cur_node = node;
-							t_info->cur_node_vers = node->getVersion();
+						// Dimos: Treat the special case where we added the 0 as a keyslice whenever a leaf is a prefix of another leaf
+						if(N::getChild(0, node) != nullptr) {
+							keyslice = 0;
 						}
-                        return 0;
+						else {
+							if(transactional){
+								t_info->cur_node = node;
+								t_info->cur_node_vers = node->getVersion();
+							}
+                       		return 0;
+						}
                     }
                     parentNode = node;
-                    node = N::getChild(k[level], parentNode);
+                    node = N::getChild(keyslice, parentNode);
                     parentNode->checkOrRestart(v,needRestart);
                     if (needRestart) goto restart;
 
@@ -89,8 +95,15 @@ namespace ART_OLC {
                         if (needRestart) goto restart;
 
                         TID tid = N::getLeaf(node);
-                        if (level < k.getKeyLen() - 1 || optimisticPrefixMatch) {
-                            return checkKey(tid, k);
+						// Dim: handle the 0 case! We need to check the key even if the encountered node is a leaf and the level is less than the key
+						// length. That's because we have the case of 0 as the keyslice to follow the leaf node.
+						// eg: When having node ABBA, we should not reply that we found AB (level=1, key length=2).
+                        // It is wrong even without the 0 case! Consider the following tree contents:
+                        // ABBA, AC
+                        // lookup(AB) will say it found it because level=1 and keylen=2!! (level = keylen-1 so ke will not be checked!)
+						//if (level < k.getKeyLen() - 1 || optimisticPrefixMatch) {
+                        if (level < k.getKeyLen() || optimisticPrefixMatch) {
+							return checkKey(tid, k);
                         }
                         return tid;
                     }
@@ -487,7 +500,7 @@ namespace ART_OLC {
 				PRINT_DEBUG("Next node is leaf, expand it!\n")
                 PRINT_DEBUG("-- Locking node %p\n", node);
 				node->upgradeToWriteLockOrRestart(v, needRestart);
-                if (needRestart) goto restart;
+				if (needRestart) goto restart;
                 Key key;
                 loadKey(N::getLeaf(nextNode), key);
 
@@ -513,10 +526,17 @@ namespace ART_OLC {
 					t_info->key_ind = k[level + prefixLength];
 				}
 				// Dimos: Must check whether level is within the key bounds!
+				// if level is not within key bounds, insert previous node under keyslice 0!
+				//  That's because we chose the design with extra layer for leaf and
+				//  we have a leaf with the same prefix of another key
+				//  eg. AB and ABBA: AB must end to a leaf with keyslice 0 and ABBA to a leaf with keyslice B
+				// TODO: What about if we insert key AB0?
 				if (level + prefixLength < key.getKeyLen())
 					n4->insert(key[level + prefixLength], nextNode);
-				else
+				else{
 					n4->insert(0, nextNode);
+					PRINT_DEBUG("Inserting 0!\n")
+				}
                 N::change(node, k[level - 1], n4);
                 // Dim STO: do not unlock now!
                 if(!transactional)
@@ -530,13 +550,8 @@ namespace ART_OLC {
         }
     }
 
-	void Tree::remove(const Key &k, TID tid, ThreadInfo &threadInfo){
-		remove(k, tid, threadInfo, nullptr);
-	}
-
-    void Tree::remove(const Key &k, TID tid, ThreadInfo &threadInfo, trans_info* t_info) {
+    void Tree::remove(const Key &k, TID tid, ThreadInfo &threadInfo) {
         EpocheGuard epocheGuard(threadInfo);
-		bool transactional = t_info != nullptr;
         restart:
         bool needRestart = false;
 
@@ -556,22 +571,25 @@ namespace ART_OLC {
 
             switch (checkPrefix(node, k, level)) { // increases level
                 case CheckPrefixResult::NoMatch:
-                    node->readUnlockOrRestart(v, needRestart);
+					node->readUnlockOrRestart(v, needRestart);
                     if (needRestart) goto restart;
                     return;
                 case CheckPrefixResult::OptimisticMatch:
                     // fallthrough
                 case CheckPrefixResult::Match: {
-                    nodeKey = k[level];
-                    nextNode = N::getChild(nodeKey, node);
+                    // Dimos: Handle the 0 case
+                    if(level == k.getKeyLen())
+						nodeKey = 0;
+					else
+						nodeKey = k[level];
+					nextNode = N::getChild(nodeKey, node);
 
                     node->checkOrRestart(v, needRestart);
                     if (needRestart) goto restart;
-
                     if (nextNode == nullptr) {
                         node->readUnlockOrRestart(v, needRestart);
                         if (needRestart) goto restart;
-                        return;
+						return;
                     }
                     if (N::isLeaf(nextNode)) {
                         if (N::getLeaf(nextNode) != tid) {
@@ -592,19 +610,11 @@ namespace ART_OLC {
                             uint8_t secondNodeK;
                             std::tie(secondNodeN, secondNodeK) = N::getSecondChild(node, nodeKey);
                             if (N::isLeaf(secondNodeN)) {
-                                //N::remove(node, k[level]); not necessary
+								//N::remove(node, k[level]); not necessary
                                 N::change(parentNode, parentKey, secondNodeN);
-
-								if(!transactional){
-                                	parentNode->writeUnlock();
-                                	node->writeUnlockObsolete();
-                                	this->epoche.markNodeForDeletion(node, threadInfo);
-								}
-								else {
-									t_info->l_node = node;
-									t_info->l_parent_node = parentNode;
-									t_info->mark_for_deletion = node;
-								}
+                                parentNode->writeUnlock();
+                                node->writeUnlockObsolete();
+                                this->epoche.markNodeForDeletion(node, threadInfo);
                             } else {
                                 secondNodeN->writeLockOrRestart(needRestart);
                                 if (needRestart) {
@@ -615,27 +625,14 @@ namespace ART_OLC {
 
                                 //N::remove(node, k[level]); not necessary
                                 N::change(parentNode, parentKey, secondNodeN);
-                                if(!transactional){
-									parentNode->writeUnlock();
-								}
-								else{
-									t_info->l_parent_node = parentNode;
-								}
-								// Can this happen now, or should it happen at commit time?
+								parentNode->writeUnlock();
                                 secondNodeN->addPrefixBefore(node, secondNodeK);
-                                if(!transactional){
-									secondNodeN->writeUnlock();
-									node->writeUnlockObsolete();
-									this->epoche.markNodeForDeletion(node, threadInfo);
-								}
-								else {
-									t_info->l_second_node = secondNodeN;
-									t_info->l_node = node;
-									t_info->mark_for_deletion = node;
-								}
+								secondNodeN->writeUnlock();
+								node->writeUnlockObsolete();
+								this->epoche.markNodeForDeletion(node, threadInfo);
                             }
                         } else {
-                            N::remove(node, v, k[level], parentNode, parentVersion, parentKey, needRestart, t_info, threadInfo);
+                            N::remove(node, v, k[level], parentNode, parentVersion, parentKey, needRestart, threadInfo);
                             if (needRestart) goto restart;
                         }
                         return;
@@ -649,12 +646,14 @@ namespace ART_OLC {
 
     inline typename Tree::CheckPrefixResult Tree::checkPrefix(N *n, const Key &k, uint32_t &level) {
         if (n->hasPrefix()) {
-            if (k.getKeyLen() <= level + n->getPrefixLength()) {
-                return CheckPrefixResult::NoMatch;
+			//PRINT_DEBUG("Key length: %u, level: %u, prefix length: %u\n", k.getKeyLen(), level, n->getPrefixLength())
+            // Dimos: handle the 0 case
+			if (k.getKeyLen() < level + n->getPrefixLength() || ( k.getKeyLen() == level + n->getPrefixLength() && N::getChild(0, n) == nullptr ) ) {
+				return CheckPrefixResult::NoMatch;
             }
             for (uint32_t i = 0; i < std::min(n->getPrefixLength(), maxStoredPrefixLength); ++i) {
                 if (n->getPrefix()[i] != k[level]) {
-                    return CheckPrefixResult::NoMatch;
+					return CheckPrefixResult::NoMatch;
                 }
                 ++level;
             }

@@ -14,13 +14,12 @@ namespace ART_OLC {
 
 	// Dim STO
 	typedef struct trans_info {
-		N* cur_node;            // the node where the record should live (inserted,deleted or looked up)
-		uint64_t cur_node_vers; // the version number (AVN) of the node where the record should live (before the insert, delete, or look up)
-		uint8_t key_ind;        // the key index to insert/delete
-		N* l_node;              // the locked node			(inserts/deletes only)
-		N* l_second_node;		// the locked second node   (on deletes)
-		N* l_parent_node;       // the locked parent node	(inserts/deletes only)
-		N* mark_for_deletion;	// the node that should be marked for deletion due to actual delete, shrink or grow
+		N* cur_node;            // the node where the record should live (inserted or looked up)
+		uint64_t cur_node_vers; // the version number (AVN) of the node where the record should live (before the insert or lookup)
+		uint8_t key_ind;        // the key index to insert
+		N* l_node;              // the locked node			(inserts only)
+		N* l_parent_node;       // the locked parent node	(inserts only)
+		//ThreadInfo& threadInfo; // the tree thread info (needed for actual delete on STO cleanup)
 	} trans_info;
 
 
@@ -105,9 +104,6 @@ namespace ART_OLC {
 		void insert(const Key &k, TID tid, ThreadInfo &epocheInfo, trans_info* t_info);
 
         void remove(const Key &k, TID tid, ThreadInfo &epocheInfo);
-		
-		// Dim STO: remove function to provide transactinal information for STO
-		void remove(const Key &k, TID tid, ThreadInfo &epocheInfo, trans_info* t_info);
     };
 }
 #endif //ART_OPTIMISTICLOCK_COUPLING_N_H
