@@ -20,21 +20,28 @@ using namespace std;
 #define PRINT_LATENCIES 0
 
 #define BLOOM_SIZE 100000 // 6.4MB size
+#define HASH_NUM 3
 
 #include <thread>
 #include <sched.h>
 #include <map>
 #include <mutex>
 
+#include "MurmurHash3.h"
+
 // if we use a #define, the performance is different: the i%_NKEYS will be calculated on compile time and it is an expensive operation.
 uint64_t n_keys = 10000000;
 
 std::atomic<uint64_t> bloom [BLOOM_SIZE];
 
-
+// takes parameter the key
 void bloom_insert(uint64_t key){
-	
-	
+	uint64_t hashValue[2];
+	MurmurHash3_x64_128(&key, sizeof(uint64_t), 0, hashValue);
+	for (unsigned i=1; i<=HASH_NUM; i++){
+		unsigned ind = (hashValue[0] + i * hashValue[1]) % BLOOM_SIZE;
+		bloom[ind] = 1;
+	}
 }
 
 void loadKey(TID tid, Key &key) {
@@ -393,6 +400,7 @@ void multithreaded(char **argv){
 }
 
 int main(int argc, char **argv) {
+	memset(bloom, 0, BLOOM_SIZE * sizeof(uint64_t));
 	if (argc < 3 || argc > 4) {
         printf("usage: %s n [n lookups] 0|1|2\nn: number of keys\n0: sorted keys\n1: dense keys\n2: sparse keys\n", argv[0]);
         return 1;
