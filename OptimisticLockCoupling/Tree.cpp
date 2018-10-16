@@ -767,11 +767,6 @@ namespace ART_OLC {
                 // Dimos: the 0 case: level is >= than the given key length: prefix mismatch (case with STOHASTIC, STOH and inserting STO)!
 				if (level >= k.getKeyLen() || curKey != k[level]) {
                     nonMatchingKey = curKey;
-                    //n->readUnlockOrRestart(v, needRestart);
-                    //if (needRestart){
-                        //cout<<"NEEDS RESTART!\n";
-                        //return CheckPrefixPessimisticResult::Match;
-                    //}
                     if (prefixLen > maxStoredPrefixLength) {
 						PRINT_DEBUG("prefix length is greater than the max stored prefix length!\n")
                         if (i < maxStoredPrefixLength) {
@@ -781,15 +776,10 @@ namespace ART_OLC {
                         }
                         memcpy(nonMatchingPrefix, &kt[0] + level + 1, std::min((prefixLen - (level - prevLevel) - 1),
                                                                            maxStoredPrefixLength));
-                        /*if(memcpy_thread_safe(nonMatchingPrefix, &kt[0] + level + 1, std::min((n->getPrefixLength() - (level - prevLevel) - 1),
-                                                                            maxStoredPrefixLength)) < 0){
-                            cout<<"MEMCPY THREAD SAFE RETURNED -1!\n";
-                            needRestart = true;
-                            return CheckPrefixPessimisticResult::Match;
-                        }*/
                     } else {
 						// Dimos: fixed bug: We must check whether node changed by a concurrent thread!
 						// program will crash if n->getPrefixLength() has changed!
+						// We now get the current value of prefixLength above, right before the for loop
                         /*n->readUnlockOrRestart(v, needRestart);
 						if (needRestart){
                             //cout<<"NEEDS RESTART!\n";
@@ -812,11 +802,6 @@ namespace ART_OLC {
                             return CheckPrefixPessimisticResult::Match;
                         }*/
 					    memcpy(nonMatchingPrefix, n->getPrefix() + i + 1, prefixLen - i - 1);
-						/*if( memcpy_thread_safe(nonMatchingPrefix, n->getPrefix() + i + 1, n->getPrefixLength() - i - 1) < 0){
-                            cout<<"MEMCPY THREAD SAFE RETURNED -1!\n";
-                            needRestart = true;
-                            return CheckPrefixPessimisticResult::Match;
-                        }*/
                     }
                     n->readUnlockOrRestart(v, needRestart);
                     if(needRestart){
