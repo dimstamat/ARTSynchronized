@@ -5,6 +5,8 @@
 #include "../Epoche.cpp"
 #include "../Key.h"
 
+#include <sstream>
+
 using namespace std;
 #include <iostream>
 
@@ -45,25 +47,28 @@ namespace ART_OLC {
         bool optimisticPrefixMatch = false;
 		bool transactional = t_info != nullptr;
 
+		PRINT_DEBUG("Looking up %s\n", keyToStr(k).c_str())
+
         node = root;
         v = node->readLockOrRestart(needRestart);
         if (needRestart) goto restart;
         while (true) {
             switch (checkPrefix(node, k, level)) { // increases level
                 case CheckPrefixResult::NoMatch:
-                    node->readUnlockOrRestart(v, needRestart);
-                    if (needRestart) goto restart;
 					PRINT_DEBUG("No match!\n")
 					if(transactional){
 						t_info->cur_node = node;
-						t_info->cur_node_vers = node->getVersion();
+                        t_info->updated_node1 = node_vers_t(node, v);
 					}
+					node->readUnlockOrRestart(v, needRestart);
+					if (needRestart) goto restart;
                     return 0;
                 case CheckPrefixResult::OptimisticMatch:
                     optimisticPrefixMatch = true;
                     // fallthrough
                 case CheckPrefixResult::Match:
-                    uint8_t keyslice = k[level];
+                    uint8_t keyslice=0;
+					PRINT_DEBUG("Match: keyslice: %c, level: %u, key length: %u\n", keyslice, level, k.getKeyLen())
 					if (k.getKeyLen() <= level) {
 						//TODO: Check if required to add in the node set here!
 						// Dimos: Treat the special case where we added the 0 as a keyslice whenever a leaf is a prefix of another leaf
@@ -73,37 +78,50 @@ namespace ART_OLC {
 						else {
 							if(transactional){
 								t_info->cur_node = node;
-								t_info->cur_node_vers = node->getVersion();
+                                t_info->updated_node1 = node_vers_t(node, v);
 							}
+							PRINT_DEBUG("child in keyslice 0 is null!\n")
+							node->readUnlockOrRestart(v, needRestart);
+							if (needRestart) goto restart;
                        		return 0;
 						}
-                    }
+                    } else
+						keyslice = k[level];
                     parentNode = node;
                     node = N::getChild(keyslice, parentNode);
                     parentNode->checkOrRestart(v,needRestart);
                     if (needRestart) goto restart;
 
                     if (node == nullptr) {
+                        parentNode->checkOrRestart(v,needRestart);
+                        if (needRestart) goto restart;
 						if(transactional){ // current node is null, add the parent node! (The node that would contain that key,val)
 							t_info->cur_node = parentNode;
-							t_info->cur_node_vers = parentNode->getVersion();
+							t_info->updated_node1 = node_vers_t(parentNode, v);
 						}
-                        return 0;
+						PRINT_DEBUG("node from keyslice %c is null!\n", keyslice)
+						return 0;
                     }
                     if (N::isLeaf(node)) {
                         parentNode->readUnlockOrRestart(v, needRestart);
                         if (needRestart) goto restart;
-
                         TID tid = N::getLeaf(node);
 						// Dim: handle the 0 case! We need to check the key even if the encountered node is a leaf and the level is less than the key
 						// length. That's because we have the case of 0 as the keyslice to follow the leaf node.
 						// eg: When having node ABBA, we should not reply that we found AB (level=1, key length=2).
                         // It is wrong even without the 0 case! Consider the following tree contents:
                         // ABBA, AC
-                        // lookup(AB) will say it found it because level=1 and keylen=2!! (level = keylen-1 so ke will not be checked!)
+                        // lookup(AB) will say it found it because level=1 and keylen=2!! (level = keylen-1 so key will not be checked!)
 						//if (level < k.getKeyLen() - 1 || optimisticPrefixMatch) {
-                        if (level < k.getKeyLen() || optimisticPrefixMatch) {
-							return checkKey(tid, k);
+						if (level < k.getKeyLen() || optimisticPrefixMatch) {
+							if(transactional){
+								t_info->check_key = true;
+								t_info->cur_node = parentNode;
+                                t_info->updated_node1 = node_vers_t(parentNode, v);
+								return tid;
+							}
+							else
+								return checkKey(tid, k);
                         }
                         return tid;
                     }
@@ -373,7 +391,7 @@ namespace ART_OLC {
         return 0;
     }
 
-    string Tree::keyToStr(const Key &k){
+    string Tree::keyToStr(const Key &k) const{
 		string res="";
 		for(unsigned i=0; i<k.getKeyLen(); i++){
 			res += (char)k[i];
@@ -389,6 +407,9 @@ namespace ART_OLC {
         EpocheGuard epocheGuard(epocheInfo);
         restart:
         bool needRestart = false;
+        if(t_info != nullptr){
+            bzero(t_info, sizeof(trans_info));
+        }
 
         N *node = nullptr;
         N *nextNode = root;
@@ -407,7 +428,7 @@ namespace ART_OLC {
             parentKey = nodeKey;
             node = nextNode;
             auto v = node->readLockOrRestart(needRestart);
-			PRINT_DEBUG("Is node locked? %u\n", node->isLocked(node->getVersion()))
+			//PRINT_DEBUG("Is node locked? %u\n", node->isLocked(node->getVersion()))
 			if (needRestart)
 				goto restart;
 
@@ -417,16 +438,20 @@ namespace ART_OLC {
             Prefix remainingPrefix;
             
 			PRINT_DEBUG("next level = %u\n", nextLevel);
-			auto res = checkPrefixPessimistic(node, k, nextLevel, nonMatchingKey, remainingPrefix,
+            auto res = checkPrefixPessimistic(node, k, nextLevel, nonMatchingKey, remainingPrefix,
                                    this->loadKey, needRestart); // increases level
             if (needRestart) goto restart;
             switch (res) {
                 case CheckPrefixPessimisticResult::NoMatch: {
                     PRINT_DEBUG("Prefix mismatch!\n")
-					parentNode->upgradeToWriteLockOrRestart(parentVersion, needRestart);
-                    PRINT_DEBUG("-- Locking parent node %p\n", parentNode);
+					if(transactional) { // get current node versions before locking!
+                        t_info->updated_node1 = node_vers_t(parentNode, parentVersion);
+                        t_info->updated_node2 = node_vers_t(node, v);
+                    }
+                    parentNode->upgradeToWriteLockOrRestart(parentVersion, needRestart);
+                    //PRINT_DEBUG("-- Locking parent node %p\n", parentNode);
 					if (needRestart) goto restart;
-					PRINT_DEBUG("-- Locking node %p\n", node);
+					//PRINT_DEBUG("-- Locking node %p\n", node);
                     node->upgradeToWriteLockOrRestart(v, needRestart);
                     if (needRestart) {
                         parentNode->writeUnlock();
@@ -437,14 +462,18 @@ namespace ART_OLC {
                     auto newNode = new N4(node->getPrefix(), nextLevel - level);
 
                     // 2)  add node and (tid, *k) as children
-                    // Dim STO: do not insert if transactional
+                    // Dimos: 0 case: add new node under 0 if nextLevel >= k's length (this means that new key is a prefix of another one and we will
+                    // go out of bounds if we do k[nextLevel]
+					// Dim STO: do not insert if transactional: We must insert the rec* casted to TID and setLeaf as the value!
+					uint8_t keyslice = ((nextLevel >= k.getKeyLen()) ? 0 : k[nextLevel] );
+					PRINT_DEBUG("Inserting new leaf node in %c\n", keyslice)
 					if(!transactional)
-						newNode->insert(k[nextLevel], N::setLeaf(tid));
+						newNode->insert(keyslice, N::setLeaf(tid));
 					else {
 						t_info->cur_node = newNode;
-						t_info->cur_node_vers = newNode->getVersion();
-						t_info->key_ind = k[nextLevel];
+						t_info->keyslice = keyslice;
 					}
+					PRINT_DEBUG("Inserting previous node in %c\n", nonMatchingKey)
                     newNode->insert(nonMatchingKey, node);
 
                     // 3) upgradeToWriteLockOrRestart, update parentNode to point to the new node, unlock
@@ -452,9 +481,15 @@ namespace ART_OLC {
                     // Dim STO: Do not unlock yet!
 					if(!transactional)
 						parentNode->writeUnlock();
-					else
+					else{
 						t_info->l_parent_node = parentNode;
+                    }
                     // 4) update prefix of node, unlock
+                    /*if (node->getPrefixLength() - ((nextLevel - level) + 1) < node->getPrefixLength()){
+                        stringstream ss;
+                        ss<<"Setting prefix size " << (node->getPrefixLength() - ((nextLevel - level) + 1)) << ", node prefix length: "<<node->getPrefixLength()<<    ", nextLevel: "<< nextLevel <<", level: "<<level<<endl;
+                        cout<<ss.str();
+                    }*/
                     node->setPrefix(remainingPrefix,
                                     node->getPrefixLength() - ((nextLevel - level) + 1));
 					// Dim STO: Do not unlock yet!
@@ -468,47 +503,51 @@ namespace ART_OLC {
                     break;
             }
             level = nextLevel;
-            nodeKey = k[level];
-            nextNode = N::getChild(nodeKey, node);
+            bool levelBeyondKeyLength = false;
+			if (level >= k.getKeyLen()){ // the case where level is beyond the given key bounds
+				nodeKey = 0;
+				nextNode = N::getChild(nodeKey, node);
+                levelBeyondKeyLength = true;
+				// could be an update!
+                //assert(nextNode == nullptr);
+			}
+			else {
+				nodeKey = k[level];
+				nextNode = N::getChild(nodeKey, node);
+			}
             node->checkOrRestart(v,needRestart);
             if (needRestart) goto restart;
 			PRINT_DEBUG("level = %u\n", level)
 			PRINT_DEBUG("Keyslice at current level: %c\n", (char) nodeKey)
             if (nextNode == nullptr) {
 				PRINT_DEBUG("Next node is null, insert!\n")
-				if(transactional)
-					t_info->cur_node_vers = node->getVersion();
-				// Dim STO: Do not unlock yet!
                 N::insert(node, v, parentNode, parentVersion, parentKey, nodeKey, N::setLeaf(tid), needRestart, t_info, epocheInfo);
                 if (needRestart) goto restart;
-                if(transactional){
-					t_info->l_node = node;
-					if(t_info->l_parent_node) {
-						t_info->l_parent_node = parentNode;
-					}
-				}
 				return;
             }
 
             if (parentNode != nullptr) {
-				PRINT_DEBUG("Parent is non-null, read unlock!\n")
+				//PRINT_DEBUG("Parent is non-null, read unlock!\n")
                 parentNode->readUnlockOrRestart(parentVersion, needRestart);
                 if (needRestart) goto restart;
             }
 
             if (N::isLeaf(nextNode)) {
 				PRINT_DEBUG("Next node is leaf, expand it!\n")
-                PRINT_DEBUG("-- Locking node %p\n", node);
-				node->upgradeToWriteLockOrRestart(v, needRestart);
+                //PRINT_DEBUG("-- Locking node %p\n", node);
+                if(transactional)
+				    t_info->updated_node1 = node_vers_t(node, v); // get the version before locking! Increases by 2 at lock!
+                node->upgradeToWriteLockOrRestart(v, needRestart);
 				if (needRestart) goto restart;
                 Key key;
                 loadKey(N::getLeaf(nextNode), key);
-
-				PRINT_DEBUG("Key for this leaf is %s\n", keyToStr(key).c_str())
-				level++;
+                // Dimos: Do not increase the level if we hit the '0' keyslice or we will go out of key bounds
+                //if(nodeKey != 0)
+                if(!levelBeyondKeyLength)
+				    level++;
                 uint32_t prefixLength = 0;
-				PRINT_DEBUG("level = %u\n", level)
                 // Dimos: Must check whether level is within the key bounds!
+                PRINT_DEBUG("Calculate common prefix of keys: %s | %s\n", keyToStr(key).c_str(), keyToStr(k).c_str())
                 if (level < key.getKeyLen() && level < k.getKeyLen()) {
 					while (key[level + prefixLength] == k[level + prefixLength]) {
                     	prefixLength++;
@@ -516,27 +555,48 @@ namespace ART_OLC {
 							break;
                 	}
 				}
-				PRINT_DEBUG("prefix length = %u\n", prefixLength)
-				auto n4 = new N4(&k[level], prefixLength);
+                // Dimos: handle updates!
+                if(prefixLength + level == k.getKeyLen() && (k.getKeyLen() == key.getKeyLen())) { // update existing key!
+                    PRINT_DEBUG("Updating!\n")
+                    if(!transactional){
+                        PRINT_DEBUG("Updating from tid %lu to %lu\n", N::getLeaf(nextNode), tid)
+                        N::change(node, nodeKey, N::setLeaf(tid));
+                        node->writeUnlock();
+                    }
+                    else {
+                        t_info->updatedVal = tid;
+                        t_info->prevVal = N::getLeaf(nextNode);
+                        t_info->l_node = node;
+                    }
+                    return;
+                }
+				PRINT_DEBUG("Prefix length: %u, level: %u, key length: %u\n", prefixLength, level, k.getKeyLen())
+				// Dimos: 0 case: there is a case that level goes out of key bounds! In this case prefixLength will be zero (if statement above will
+				//  not be executed)
+				auto n4 = new N4((level < k.getKeyLen() ? &k[level] : nullptr), prefixLength);
+				// insert in keyscice 0 if index is out of key bounds
+				uint8_t keyslice = ( (level + prefixLength < k.getKeyLen()) ? k[level + prefixLength] : 0 );
 				// Dim STO: do not insert if transactional
+				PRINT_DEBUG("Inserting new leaf node in keyslice %c (level: %u, prefixLength: %u, key: %s)\n", keyslice, level, prefixLength, keyToStr(k).c_str())
 				if(!transactional)
-					n4->insert(k[level + prefixLength], N::setLeaf(tid));
+					n4->insert(keyslice, N::setLeaf(tid));
 				else {
 					t_info->cur_node = n4;
-					t_info->key_ind = k[level + prefixLength];
+					t_info->keyslice = keyslice;
 				}
-				// Dimos: Must check whether level is within the key bounds!
-				// if level is not within key bounds, insert previous node under keyslice 0!
-				//  That's because we chose the design with extra layer for leaf and
-				//  we have a leaf with the same prefix of another key
-				//  eg. AB and ABBA: AB must end to a leaf with keyslice 0 and ABBA to a leaf with keyslice B
-				// TODO: What about if we insert key AB0?
-				if (level + prefixLength < key.getKeyLen())
+				// Dimos: 0 case: Must check whether level is within the key bounds!
+				// if level is not within key bounds, insert previous node in keyslice 0!
+				//  eg. AB and ABBA: AB must end to a leaf stored in keyslice 0 and ABBA to a leaf with keyslice B
+				PRINT_DEBUG("level: %u, prefix length: %u, key length: %u\n", level, prefixLength, key.getKeyLen())
+				if (level + prefixLength < key.getKeyLen()){
+					PRINT_DEBUG("Inserting previous node in keyslice %c (key (as got from loadKey): %s)\n", key[level + prefixLength], keyToStr(key).c_str())
 					n4->insert(key[level + prefixLength], nextNode);
-				else{
-					n4->insert(0, nextNode);
-					PRINT_DEBUG("Inserting 0!\n")
 				}
+				else {
+					n4->insert(0, nextNode);
+					PRINT_DEBUG("Inserting previous node in keyslice 0!\n")
+				}
+                // TODO node set: we might need to update the version number of this node, if in node set!
                 N::change(node, k[level - 1], n4);
                 // Dim STO: do not unlock now!
                 if(!transactional)
@@ -573,11 +633,11 @@ namespace ART_OLC {
                 case CheckPrefixResult::NoMatch:
 					node->readUnlockOrRestart(v, needRestart);
                     if (needRestart) goto restart;
-                    return;
+					return;
                 case CheckPrefixResult::OptimisticMatch:
                     // fallthrough
                 case CheckPrefixResult::Match: {
-                    // Dimos: Handle the 0 case
+                    // Dimos: Handle the common prefix/suffix case (was earlier 0 case)
                     if(level == k.getKeyLen())
 						nodeKey = 0;
 					else
@@ -593,6 +653,7 @@ namespace ART_OLC {
                     }
                     if (N::isLeaf(nextNode)) {
                         if (N::getLeaf(nextNode) != tid) {
+							cout <<"TID mismatch! provided tid: "<< tid<<", found TID: " << N::getLeaf(nextNode) << ". Will not remove!"<<endl;
                             return;
                         }
                         assert(parentNode == nullptr || node->getCount() != 1);
@@ -632,7 +693,9 @@ namespace ART_OLC {
 								this->epoche.markNodeForDeletion(node, threadInfo);
                             }
                         } else {
-                            N::remove(node, v, k[level], parentNode, parentVersion, parentKey, needRestart, threadInfo);
+							// Dimos: 0 case
+                            //N::remove(node, v, k[level], parentNode, parentVersion, parentKey, needRestart, threadInfo);
+                            N::remove(node, v, nodeKey, parentNode, parentVersion, parentKey, needRestart, threadInfo);
                             if (needRestart) goto restart;
                         }
                         return;
@@ -646,13 +709,15 @@ namespace ART_OLC {
 
     inline typename Tree::CheckPrefixResult Tree::checkPrefix(N *n, const Key &k, uint32_t &level) {
         if (n->hasPrefix()) {
-			//PRINT_DEBUG("Key length: %u, level: %u, prefix length: %u\n", k.getKeyLen(), level, n->getPrefixLength())
-            // Dimos: handle the 0 case
+			//PRINT_DEBUG("checkPrefix()-> Key length: %u, level: %u, prefix length: %u, node has keyslice 0? %u\n", k.getKeyLen(), level, n->getPrefixLength(), N::getChild(0, n)!=nullptr)
+			// Dimos: handle the 0 case
 			if (k.getKeyLen() < level + n->getPrefixLength() || ( k.getKeyLen() == level + n->getPrefixLength() && N::getChild(0, n) == nullptr ) ) {
+				PRINT_DEBUG("1) No match!")
 				return CheckPrefixResult::NoMatch;
             }
             for (uint32_t i = 0; i < std::min(n->getPrefixLength(), maxStoredPrefixLength); ++i) {
                 if (n->getPrefix()[i] != k[level]) {
+					PRINT_DEBUG("2) No match!")
 					return CheckPrefixResult::NoMatch;
                 }
                 ++level;
@@ -665,6 +730,15 @@ namespace ART_OLC {
         return CheckPrefixResult::Match;
     }
 
+    int memcpy_thread_safe(uint8_t* dest, const uint8_t* src, size_t len){
+        for(size_t i=0; i<len; i++){
+            if(src == nullptr)
+                return -1;
+            *(dest+i) = *(src+i);
+        }
+        return 0;
+    }
+
     typename Tree::CheckPrefixPessimisticResult Tree::checkPrefixPessimistic(N *n, const Key &k, uint32_t &level,
                                                                         uint8_t &nonMatchingKey,
                                                                         Prefix &nonMatchingPrefix,
@@ -672,30 +746,90 @@ namespace ART_OLC {
         if (n->hasPrefix()) {
             uint32_t prevLevel = level;
             Key kt;
-            for (uint32_t i = 0; i < n->getPrefixLength(); ++i) {
+            auto v = n->readLockOrRestart(needRestart);
+            uint32_t prefixLen = n->getPrefixLength();
+            n->readUnlockOrRestart(v, needRestart);
+            if (needRestart){
+                cout<<"NEEDS RESTART!\n";
+                return CheckPrefixPessimisticResult::Match;
+            }
+            v = n->readLockOrRestart(needRestart);
+            for (uint32_t i = 0; i < prefixLen; ++i) {
+                // Dimos: fixed bug: We must check whether node changed by a concurrent thread!
+                //auto v = n->readLockOrRestart(needRestart);
+				//PRINT_DEBUG("Key length: %u, prefix length: %u, level: %u\n", k.getKeyLen(), prefixLen, level)
                 if (i == maxStoredPrefixLength) {
                     auto anyTID = N::getAnyChildTid(n, needRestart);
                     if (needRestart) return CheckPrefixPessimisticResult::Match;
                     loadKey(anyTID, kt);
                 }
                 uint8_t curKey = i >= maxStoredPrefixLength ? kt[level] : n->getPrefix()[i];
-                if (curKey != k[level]) {
+                // Dimos: the 0 case: level is >= than the given key length: prefix mismatch (case with STOHASTIC, STOH and inserting STO)!
+				if (level >= k.getKeyLen() || curKey != k[level]) {
                     nonMatchingKey = curKey;
-                    if (n->getPrefixLength() > maxStoredPrefixLength) {
+                    //n->readUnlockOrRestart(v, needRestart);
+                    //if (needRestart){
+                        //cout<<"NEEDS RESTART!\n";
+                        //return CheckPrefixPessimisticResult::Match;
+                    //}
+                    if (prefixLen > maxStoredPrefixLength) {
+						PRINT_DEBUG("prefix length is greater than the max stored prefix length!\n")
                         if (i < maxStoredPrefixLength) {
                             auto anyTID = N::getAnyChildTid(n, needRestart);
                             if (needRestart) return CheckPrefixPessimisticResult::Match;
                             loadKey(anyTID, kt);
                         }
-                        memcpy(nonMatchingPrefix, &kt[0] + level + 1, std::min((n->getPrefixLength() - (level - prevLevel) - 1),
+                        memcpy(nonMatchingPrefix, &kt[0] + level + 1, std::min((prefixLen - (level - prevLevel) - 1),
                                                                            maxStoredPrefixLength));
+                        /*if(memcpy_thread_safe(nonMatchingPrefix, &kt[0] + level + 1, std::min((n->getPrefixLength() - (level - prevLevel) - 1),
+                                                                            maxStoredPrefixLength)) < 0){
+                            cout<<"MEMCPY THREAD SAFE RETURNED -1!\n";
+                            needRestart = true;
+                            return CheckPrefixPessimisticResult::Match;
+                        }*/
                     } else {
-						PRINT_DEBUG("copying %u bytes to nonMatchingPrefix\n", n->getPrefixLength() - i - 1)
-                        memcpy(nonMatchingPrefix, n->getPrefix() + i + 1, n->getPrefixLength() - i - 1);
+						// Dimos: fixed bug: We must check whether node changed by a concurrent thread!
+						// program will crash if n->getPrefixLength() has changed!
+                        /*n->readUnlockOrRestart(v, needRestart);
+						if (needRestart){
+                            //cout<<"NEEDS RESTART!\n";
+                            return CheckPrefixPessimisticResult::Match;
+                        }
+                        if(n==nullptr){ //someone change it! Just restart!
+                            needRestart = true;
+                            return CheckPrefixPessimisticResult::Match;
+                        }
+						if(n->getPrefixLength() <= i) {// someone changed it!!
+							//cout << "SOMEONE CHANGED NODE!\n";
+                            n->readUnlockOrRestart(v, needRestart);
+                            if (needRestart) return CheckPrefixPessimisticResult::Match;
+						}
+                        //if(n->getPrefixLength() == 0){
+                        //    cout<<"Oh no!\n";
+                        //}
+					    if( ((int)n->getPrefixLength()) - (int)i - 1 < 0){
+                            needRestart = true;
+                            return CheckPrefixPessimisticResult::Match;
+                        }*/
+					    memcpy(nonMatchingPrefix, n->getPrefix() + i + 1, prefixLen - i - 1);
+						/*if( memcpy_thread_safe(nonMatchingPrefix, n->getPrefix() + i + 1, n->getPrefixLength() - i - 1) < 0){
+                            cout<<"MEMCPY THREAD SAFE RETURNED -1!\n";
+                            needRestart = true;
+                            return CheckPrefixPessimisticResult::Match;
+                        }*/
                     }
+                    n->readUnlockOrRestart(v, needRestart);
+                    if(needRestart){
+                        return CheckPrefixPessimisticResult::Match;
+                    }
+					PRINT_DEBUG("No match! Common prefix is until level %u\n", level)
                     return CheckPrefixPessimisticResult::NoMatch;
                 }
                 ++level;
+            }
+            n->readUnlockOrRestart(v, needRestart);
+            if(needRestart){
+                return CheckPrefixPessimisticResult::Match;
             }
         }
         return CheckPrefixPessimisticResult::Match;
