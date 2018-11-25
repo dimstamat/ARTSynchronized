@@ -54,12 +54,21 @@ namespace ART_OLC {
         uint8_t count = 0;
         Prefix prefix;
 
-
         void setType(NTypes type);
 
         static uint64_t convertTypeToVersion(NTypes type);
 
     public:
+		// Dim: Flag to indicate that a node contains a leaf with the last keyslice in the current node:
+		// eg:  having already key ABBA in the tree and inserting AB. This will do lazy expansion to
+		// create a new node holding AB and ABBA as leaves. The suffix flag will be set to indicate that 
+		// there is a leaf node at that level. However, it is not clear in which keyslice to add that leaf.
+		// If we use 0, we then occupy that slot for a key that really contains 0 (AB01).
+		// It doesn't work! We will use a suffix TID instead.
+		//uint8_t suffix;	
+		// We store the suffix of a key if there is a common prefix with a longer key (storing ABBA and AB).
+		//TID suffix;
+		// This will need major changes in ART. We will assume fixed size keys for now!
 
 		typedef struct trans_info trans_info;
 

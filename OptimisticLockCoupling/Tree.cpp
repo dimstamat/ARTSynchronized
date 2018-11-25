@@ -750,7 +750,7 @@ namespace ART_OLC {
             uint32_t prefixLen = n->getPrefixLength();
             n->readUnlockOrRestart(v, needRestart);
             if (needRestart){
-                cout<<"NEEDS RESTART!\n";
+                //cout<<"NEEDS RESTART!\n";
                 return CheckPrefixPessimisticResult::Match;
             }
             v = n->readLockOrRestart(needRestart);

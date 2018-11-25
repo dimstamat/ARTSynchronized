@@ -12,14 +12,21 @@ using namespace ART;
 
 namespace ART_OLC {
 
+using node_vers_t = std::tuple<N*, uint64_t>;
+
 	// Dim STO
 	typedef struct trans_info {
-		N* cur_node;            // the node where the record should live (inserted or looked up)
-		uint64_t cur_node_vers; // the version number (AVN) of the node where the record should live (before the insert or lookup)
-		uint8_t key_ind;        // the key index to insert
-		N* l_node;              // the locked node			(inserts only)
-		N* l_parent_node;       // the locked parent node	(inserts only)
-		//ThreadInfo& threadInfo; // the tree thread info (needed for actual delete on STO cleanup)
+		bool w_unlock_obsolete;     // whether to unlock with writeUnlockObsolete()
+        N* cur_node;                // the node where the record should live (inserted or looked up)
+		uint8_t keyslice;           // the keyslice to insert
+		N* l_node;                  // the locked node			(inserts and updates only)
+		N* l_parent_node;           // the locked parent node	(inserts only)
+		node_vers_t updated_node1;  // the first node we change and thus we should update its AVN (Node*, AVN)
+        node_vers_t updated_node2;  // the second node we change and thus we should update its AVN (Node*, AVN)
+        bool check_key;			    // the caller must call checkKey because the default ART loadKey does not cast from rec* to TID!
+        TID prevVal;                // the existing tid before the update
+        TID updatedVal;             // if > 0, then it is an update
+        //ThreadInfo& threadInfo; // the tree thread info (needed for actual delete on STO cleanup)
 	} trans_info;
 
 
@@ -66,7 +73,7 @@ namespace ART_OLC {
         };
 
 		// Dim: for debugging:
-		std::string keyToStr(const Key &k);
+		std::string keyToStr(const Key &k) const;
 
         static CheckPrefixResult checkPrefix(N* n, const Key &k, uint32_t &level);
 

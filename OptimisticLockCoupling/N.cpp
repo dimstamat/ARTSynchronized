@@ -106,29 +106,32 @@ namespace ART_OLC {
                 if (needRestart) return;
             }
 			PRINT_DEBUG_NODE("-- (insertGrow): Locking node %p\n", n)
+            if(transactional) // get node AVN before locking
+                t_info->updated_node1 = node_vers_t(n, v);
             n->upgradeToWriteLockOrRestart(v, needRestart);
             if (needRestart) {
 				PRINT_DEBUG_NODE("Needs restart!\n")
 				return;
 			}
-            // Dim: If transactional (writeUnlock=false), do not insert now! We will isnert later that we will have the record*
-			if(!transactional)
+            // Dim: If transactional (writeUnlock=false), do not insert now! We will insert later that we will have the record*
+			if(!transactional){
 				n->insert(key, val);
+                n->writeUnlock();
+            }
 			else {
 				t_info->cur_node = n;
-				t_info->cur_node_vers = n->getVersion();
-				t_info->key_ind = key;
-			}
-            if(!transactional)
-				n->writeUnlock();
-			else{
+				t_info->keyslice = key;
 				PRINT_DEBUG_NODE("Mark node for later unlock!\n")
 				t_info->l_node = n;
-			}
+            }
             return;
         }
 		PRINT_DEBUG_NODE("Growing node!\n")
 		PRINT_DEBUG_NODE("-- Locking parent node %p\n", parentNode)
+        if(transactional){
+            t_info->updated_node1 = node_vers_t(parentNode, parentVersion);
+            t_info->updated_node2 = node_vers_t(n, v);
+        }
         parentNode->upgradeToWriteLockOrRestart(parentVersion, needRestart);
         if (needRestart) return;
 		PRINT_DEBUG_NODE("-- Locking node %p\n", n)
@@ -144,16 +147,16 @@ namespace ART_OLC {
         	nBig->insert(key, val);
 		else{
 			t_info->cur_node = nBig;
-			t_info->cur_node_vers = nBig->getVersion();
-			t_info->key_ind = key;
+			t_info->keyslice = key;
 		}
         N::change(parentNode, keyParent, nBig);
-		if(!t_info){
+		if(!transactional){
         	n->writeUnlockObsolete();
 			threadInfo.getEpoche().markNodeForDeletion(n, threadInfo);
 			parentNode->writeUnlock();
 		}
 		else{
+            t_info->w_unlock_obsolete = true;
 			t_info->l_node = n;
 			t_info->l_parent_node = parentNode;
 		}
