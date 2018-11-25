@@ -8,9 +8,9 @@ else()
     message(STATUS "Build type is set to ${CMAKE_BUILD_TYPE}")
 endif()
 
-set(MURMURHASH_DIR "/home/dimos/sto-old/smhasher/src")
+set(MURMURHASH_DIR "/home/dimos/sto/smhasher/src")
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14 -Wall -Wextra -march=native -g -I${MURMURHASH_DIR}")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14 -Wall -Wextra -march=native -g -I${MURMURHASH_DIR} -I/home/dimos/tbb/include -L/home/dimos/tbb/build/linux_intel64_gcc_cc5.3.1_libc2.17_kernel3.10.0_release")
 
 find_library(JemallocLib jemalloc)
 find_library(TbbLib tbb)
