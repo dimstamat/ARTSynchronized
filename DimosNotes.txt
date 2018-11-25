@@ -1,0 +1,2 @@
+we must include the custom TBB library:
+export CMAKE_LIBRARY_PATH=/home/dimos/tbb/build/linux_intel64_gcc_cc5.3.1_libc2.17_kernel3.10.0_release
