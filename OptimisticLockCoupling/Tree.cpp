@@ -20,6 +20,9 @@ using namespace std;
 namespace ART_OLC {
 
     Tree::Tree(LoadKeyFunction loadKey) : root(new N256( nullptr, 0)), loadKey(loadKey) {
+        #if MEASURE_TREE_SIZE == 1
+            memset(tree_sz, 0, N_THREADS * sizeof(uint64_t));
+        #endif
     }
 
     Tree::~Tree() {
@@ -31,11 +34,25 @@ namespace ART_OLC {
         return ThreadInfo(this->epoche);
     }
 
+    #if MEASURE_TREE_SIZE == 1
+    uint64_t Tree::getTreeSize(){
+        uint64_t size=0;
+        for(uint8_t i=0; i<N_THREADS; i++){
+            size += tree_sz[i];
+        }
+        return size;
+    }
+    #endif
+
 	TID Tree::lookup(const Key &k, ThreadInfo &threadEpocheInfo) const {
 		return lookup(k, threadEpocheInfo, nullptr);
 	}
 
     TID Tree::lookup(const Key &k, ThreadInfo &threadEpocheInfo, trans_info* t_info) const {
+        return lookup(k, threadEpocheInfo, t_info, nullptr);
+    }
+
+    TID Tree::lookup(const Key &k, ThreadInfo &threadEpocheInfo, trans_info* t_info, N* startNode) const {
 		EpocheGuardReadonly epocheGuard(threadEpocheInfo);
         restart:
         bool needRestart = false;
@@ -49,10 +66,20 @@ namespace ART_OLC {
 
 		PRINT_DEBUG("Looking up %s\n", keyToStr(k).c_str())
 
-        node = root;
+        node = (startNode == nullptr? root: startNode);
         v = node->readLockOrRestart(needRestart);
-        if (needRestart) goto restart;
+        // Dimos: when looking up for a key from a startNode in ABSENT_VALIDATION 2 or 3 there is a case that the node is obsolete and will always stay obsolete. Abort the transaction and the new attempt will end up in the new node.
+        if(node->isObsolete(v) && startNode != nullptr) {
+            t_info->shouldAbort = true;
+            return 0;
+        }
+        if (needRestart)
+            goto restart;
+        
         while (true) {
+            #if MEASURE_ART_NODE_ACCESSES == 1
+            t_info->accessed_nodes++;
+            #endif
             switch (checkPrefix(node, k, level)) { // increases level
                 case CheckPrefixResult::NoMatch:
 					PRINT_DEBUG("No match!\n")
@@ -79,7 +106,7 @@ namespace ART_OLC {
 							if(transactional){
 								t_info->cur_node = node;
                                 t_info->updated_node1 = node_vers_t(node, v);
-							}
+                            }
 							PRINT_DEBUG("child in keyslice 0 is null!\n")
 							node->readUnlockOrRestart(v, needRestart);
 							if (needRestart) goto restart;
@@ -391,14 +418,6 @@ namespace ART_OLC {
         return 0;
     }
 
-    string Tree::keyToStr(const Key &k) const{
-		string res="";
-		for(unsigned i=0; i<k.getKeyLen(); i++){
-			res += (char)k[i];
-		}
-		return res;
-	}
-
 	void Tree::insert(const Key &k, TID tid, ThreadInfo &epocheInfo){
 		insert(k, tid, epocheInfo, nullptr);
 	}
@@ -460,6 +479,10 @@ namespace ART_OLC {
 					PRINT_DEBUG("Prefix of new node will be %u\n", nextLevel - level)
                     // 1) Create new node which will be parent of node, Set common prefix, level to this node
                     auto newNode = new N4(node->getPrefix(), nextLevel - level);
+                    #if MEASURE_TREE_SIZE == 1
+                    if(transactional)
+                        t_info->addedSize = 36; // 4 + 4 * 64-bit pointers
+                    #endif
 
                     // 2)  add node and (tid, *k) as children
                     // Dimos: 0 case: add new node under 0 if nextLevel >= k's length (this means that new key is a prefix of another one and we will
@@ -574,7 +597,11 @@ namespace ART_OLC {
 				// Dimos: 0 case: there is a case that level goes out of key bounds! In this case prefixLength will be zero (if statement above will
 				//  not be executed)
 				auto n4 = new N4((level < k.getKeyLen() ? &k[level] : nullptr), prefixLength);
-				// insert in keyscice 0 if index is out of key bounds
+				#if MEASURE_TREE_SIZE == 1
+                    if(transactional)
+                        t_info->addedSize = 36; // 4 + 4 64-bit pointers
+                #endif
+                // insert in keyscice 0 if index is out of key bounds
 				uint8_t keyslice = ( (level + prefixLength < k.getKeyLen()) ? k[level + prefixLength] : 0 );
 				// Dim STO: do not insert if transactional
 				PRINT_DEBUG("Inserting new leaf node in keyslice %c (level: %u, prefixLength: %u, key: %s)\n", keyslice, level, prefixLength, keyToStr(k).c_str())
@@ -596,7 +623,7 @@ namespace ART_OLC {
 					n4->insert(0, nextNode);
 					PRINT_DEBUG("Inserting previous node in keyslice 0!\n")
 				}
-                // TODO node set: we might need to update the version number of this node, if in node set!
+                // TODO node set: we might need to update the version number of this node, if in node set! Line 562: we do store node in the t_info->updated_node1.
                 N::change(node, k[level - 1], n4);
                 // Dim STO: do not unlock now!
                 if(!transactional)
@@ -610,7 +637,11 @@ namespace ART_OLC {
         }
     }
 
-    void Tree::remove(const Key &k, TID tid, ThreadInfo &threadInfo) {
+    void Tree::remove(const Key&k, TID tid, ThreadInfo &threadInfo){
+        remove(k, tid, threadInfo, nullptr);
+    }
+
+    void Tree::remove(const Key &k, TID tid, ThreadInfo &threadInfo, trans_info* t_info) {
         EpocheGuard epocheGuard(threadInfo);
         restart:
         bool needRestart = false;
@@ -621,6 +652,8 @@ namespace ART_OLC {
         uint8_t parentKey, nodeKey = 0;
         uint64_t parentVersion = 0;
         uint32_t level = 0;
+
+        bool transactional = (t_info != nullptr);
 
         while (true) {
             parentNode = node;
@@ -633,6 +666,8 @@ namespace ART_OLC {
                 case CheckPrefixResult::NoMatch:
 					node->readUnlockOrRestart(v, needRestart);
                     if (needRestart) goto restart;
+                    if(transactional)
+                        t_info->shouldAbort = true; // let the caller know that the element was not deleted! We are using the shouldAbort field so that to not include an extra field for 'deleted'
 					return;
                 case CheckPrefixResult::OptimisticMatch:
                     // fallthrough
@@ -649,11 +684,17 @@ namespace ART_OLC {
                     if (nextNode == nullptr) {
                         node->readUnlockOrRestart(v, needRestart);
                         if (needRestart) goto restart;
+                        if(transactional)
+                            t_info->shouldAbort = true; // let the caller know that the element was not deleted! We are using the shouldAbort field so that to not include an extra field for 'deleted'
 						return;
                     }
                     if (N::isLeaf(nextNode)) {
                         if (N::getLeaf(nextNode) != tid) {
 							cout <<"TID mismatch! provided tid: "<< tid<<", found TID: " << N::getLeaf(nextNode) << ". Will not remove!"<<endl;
+                            node->readUnlockOrRestart(v, needRestart);
+                            if (needRestart) goto restart;
+                            if(transactional)
+                                t_info->shouldAbort = true; // let the caller know that the element was not deleted! We are using the shouldAbort field so that to not include an extra field for 'deleted'
                             return;
                         }
                         assert(parentNode == nullptr || node->getCount() != 1);
@@ -706,6 +747,7 @@ namespace ART_OLC {
             }
         }
     }
+
 
     inline typename Tree::CheckPrefixResult Tree::checkPrefix(N *n, const Key &k, uint32_t &level) {
         if (n->hasPrefix()) {
