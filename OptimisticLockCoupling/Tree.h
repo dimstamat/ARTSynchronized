@@ -4,11 +4,18 @@
 
 #ifndef ART_OPTIMISTICLOCK_COUPLING_N_H
 #define ART_OPTIMISTICLOCK_COUPLING_N_H
+
+ // Dimos: This is used for the tree size metric, needed by merge
+#define MEASURE_TREE_SIZE 1
+#define N_THREADS 20
+
 #include "N.h"
 
 #include <string>
 
 using namespace ART;
+
+#define MEASURE_ART_NODE_ACCESSES 0
 
 namespace ART_OLC {
 
@@ -26,20 +33,41 @@ using node_vers_t = std::tuple<N*, uint64_t>;
         bool check_key;			    // the caller must call checkKey because the default ART loadKey does not cast from rec* to TID!
         TID prevVal;                // the existing tid before the update
         TID updatedVal;             // if > 0, then it is an update
+        #if MEASURE_ART_NODE_ACCESSES == 1
+        uint8_t accessed_nodes;     // measure the number of accessed ART nodes for statistical purposes
+        #endif
+        #if MEASURE_TREE_SIZE == 1
+        unsigned addedSize;              // the change in the tree's size after an insert or delete operation, required by merge. (negative number is caused 
+                                    // by delete)
+        #endif
+        bool shouldAbort;           // whether the transaction should abort due to encountering of an 
+                                    // obsolete node during ABSENT_VALIDATION
         //ThreadInfo& threadInfo; // the tree thread info (needed for actual delete on STO cleanup)
 	} trans_info;
 
 
     class Tree {
+    
+    N *const root;
+
     public:
         using LoadKeyFunction = void (*)(TID tid, Key &key);
 
-    private:
-        N *const root;
+        #if MEASURE_TREE_SIZE == 1
+        uint64_t tree_sz[N_THREADS];
+        #endif
+
+        //Dim: Testing
+        // It should be public, so that to be used in HybridTART when merging
+        LoadKeyFunction loadKey;
+
+    //private:
+
+        //N *const root;
 
 	// Dim: Testing
-	protected:
-		LoadKeyFunction loadKey;
+	//protected:
+		//LoadKeyFunction loadKey;
 	
 	private:
 		
@@ -73,7 +101,13 @@ using node_vers_t = std::tuple<N*, uint64_t>;
         };
 
 		// Dim: for debugging:
-		std::string keyToStr(const Key &k) const;
+		static std::string keyToStr(const Key &k) {
+            std::string res="";
+            for(unsigned i=0; i<k.getKeyLen(); i++){
+                res += (char)k[i];
+            }
+            return res;
+        }
 
         static CheckPrefixResult checkPrefix(N* n, const Key &k, uint32_t &level);
 
@@ -98,9 +132,14 @@ using node_vers_t = std::tuple<N*, uint64_t>;
 
         ThreadInfo getThreadInfo();
 
+        #if MEASURE_TREE_SIZE == 1
+        uint64_t getTreeSize(void);
+        #endif
+
         TID lookup(const Key &k, ThreadInfo &threadEpocheInfo) const;
 		// Dim: For transactional ART
 		TID lookup(const Key &k, ThreadInfo &threadEpocheInfo, trans_info* t_info) const;
+        TID lookup(const Key &k, ThreadInfo &threadEpocheInfo, trans_info* t_info, N* startNode) const;
 
         bool lookupRange(const Key &start, const Key &end, Key &continueKey, TID result[], std::size_t resultLen,
                          std::size_t &resultCount, ThreadInfo &threadEpocheInfo) const;
@@ -111,6 +150,9 @@ using node_vers_t = std::tuple<N*, uint64_t>;
 		void insert(const Key &k, TID tid, ThreadInfo &epocheInfo, trans_info* t_info);
 
         void remove(const Key &k, TID tid, ThreadInfo &epocheInfo);
+
+        // Dim STO: insert function to provide transactinal information for STO
+        void remove(const Key &k, TID tid, ThreadInfo &epocheInfo, trans_info* t_info);
     };
 }
 #endif //ART_OPTIMISTICLOCK_COUPLING_N_H
