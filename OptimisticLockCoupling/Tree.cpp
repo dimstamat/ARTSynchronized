@@ -558,10 +558,11 @@ namespace ART_OLC {
             if (N::isLeaf(nextNode)) {
 				PRINT_DEBUG("Next node is leaf, expand it!\n")
                 //PRINT_DEBUG("-- Locking node %p\n", node);
-                if(transactional)
-				    t_info->updated_node1 = node_vers_t(node, v); // get the version before locking! Increases by 2 at lock!
-                node->upgradeToWriteLockOrRestart(v, needRestart);
-				if (needRestart) goto restart;
+                // Dimos: Do not get write lock if transactional as it could be an update! We don't need a write lock in the update when we are in transactional mode! The updated tid will be added in the write set and updated at STO commit time
+                if(!transactional) {
+                    node->upgradeToWriteLockOrRestart(v, needRestart);
+				    if (needRestart) goto restart;
+                }
                 Key key;
                 loadKey(N::getLeaf(nextNode), key);
                 // Dimos: Do not increase the level if we hit the '0' keyslice or we will go out of key bounds
@@ -589,11 +590,12 @@ namespace ART_OLC {
                     else {
                         t_info->updatedVal = tid;
                         t_info->prevVal = N::getLeaf(nextNode);
-                        t_info->l_node = node;
+                        // we don't need to lock if it's an update!
+                        //t_info->l_node = node;
                     }
                     return;
                 }
-				PRINT_DEBUG("Prefix length: %u, level: %u, key length: %u\n", prefixLength, level, k.getKeyLen())
+                PRINT_DEBUG("Prefix length: %u, level: %u, key length: %u\n", prefixLength, level, k.getKeyLen())
 				// Dimos: 0 case: there is a case that level goes out of key bounds! In this case prefixLength will be zero (if statement above will
 				//  not be executed)
 				auto n4 = new N4((level < k.getKeyLen() ? &k[level] : nullptr), prefixLength);
@@ -623,6 +625,13 @@ namespace ART_OLC {
 					n4->insert(0, nextNode);
 					PRINT_DEBUG("Inserting previous node in keyslice 0!\n")
 				}
+                // grab the write lock now
+                if(transactional){
+                    t_info->updated_node1 = node_vers_t(node, v); // get the version before locking! Increases by 2 at lock!
+                    node->upgradeToWriteLockOrRestart(v, needRestart);
+                    if (needRestart) goto restart;
+                }
+                
                 // TODO node set: we might need to update the version number of this node, if in node set! Line 562: we do store node in the t_info->updated_node1.
                 N::change(node, k[level - 1], n4);
                 // Dim STO: do not unlock now!
