@@ -6,10 +6,17 @@
 #define ART_OPTIMISTICLOCK_COUPLING_N_H
 
  // Dimos: This is used for the tree size metric, needed by merge
-#define MEASURE_TREE_SIZE 1
+#define MEASURE_TREE_SIZE 0
 #define N_THREADS 20
 
 #include "N.h"
+
+// Dimos: It really helps to have access to TART and Sto for range queries. If not, we would have to add all encountered keys in the read set
+// by traversing the array with the keys. Also, we would have to add all parent nodes to the node set by adding them in a data structure and then 
+// traversing them again.
+
+//#include "../../TART.hh"
+//template <typename T, typename BloomT> class TART;
 
 #include <string>
 
@@ -21,8 +28,11 @@ namespace ART_OLC {
 
 using node_vers_t = std::tuple<N*, uint64_t>;
 
+
+    //TODO: have a separate struct for lookups and inserts as they need different attributes!
+
 	// Dim STO
-	typedef struct trans_info {
+	typedef struct trans_info_t {
 		bool w_unlock_obsolete;     // whether to unlock with writeUnlockObsolete()
         N* cur_node;                // the node where the record should live (inserted or looked up)
 		uint8_t keyslice;           // the keyslice to insert
@@ -43,7 +53,15 @@ using node_vers_t = std::tuple<N*, uint64_t>;
         bool shouldAbort;           // whether the transaction should abort due to encountering of an 
                                     // obsolete node during ABSENT_VALIDATION
         //ThreadInfo& threadInfo; // the tree thread info (needed for actual delete on STO cleanup)
-	} trans_info;
+	} trans_info_t;
+
+
+    // keep a separate struct for range queries as we don't want to carry the array when not needed.
+    typedef struct trans_info_range_t {
+        std::function<bool(TID)> addKeyRS;  // adds specified key in the read set
+        std::function<bool(const N*, uint64_t)>addNodeNS;   // adds specified parent node together with its version in the node set for phantom prevention
+        bool abort; // whether the transaction should abort or not
+    }trans_info_range_t;
 
 
     class Tree {
@@ -138,21 +156,24 @@ using node_vers_t = std::tuple<N*, uint64_t>;
 
         TID lookup(const Key &k, ThreadInfo &threadEpocheInfo) const;
 		// Dim: For transactional ART
-		TID lookup(const Key &k, ThreadInfo &threadEpocheInfo, trans_info* t_info) const;
-        TID lookup(const Key &k, ThreadInfo &threadEpocheInfo, trans_info* t_info, N* startNode) const;
+		TID lookup(const Key &k, ThreadInfo &threadEpocheInfo, trans_info_t* t_info) const;
+        TID lookup(const Key &k, ThreadInfo &threadEpocheInfo, trans_info_t* t_info, N* startNode) const;
 
         bool lookupRange(const Key &start, const Key &end, Key &continueKey, TID result[], std::size_t resultLen,
                          std::size_t &resultCount, ThreadInfo &threadEpocheInfo) const;
+        // Dim: For transactional ART
+        bool lookupRange(const Key &start, const Key &end, Key &continueKey, TID result[], std::size_t resultLen,
+                        std::size_t &resultCount, ThreadInfo &threadEpocheInfo, trans_info_range_t* t_info) const;
 
         void insert(const Key &k, TID tid, ThreadInfo &epocheInfo);
 
 		// Dim STO: insert function to provide transactinal information for STO
-		void insert(const Key &k, TID tid, ThreadInfo &epocheInfo, trans_info* t_info);
+		void insert(const Key &k, TID tid, ThreadInfo &epocheInfo, trans_info_t* t_info);
 
         void remove(const Key &k, TID tid, ThreadInfo &epocheInfo);
 
-        // Dim STO: insert function to provide transactinal information for STO
-        void remove(const Key &k, TID tid, ThreadInfo &epocheInfo, trans_info* t_info);
+        // Dim STO: remove function to provide transactinal information for STO
+        void remove(const Key &k, TID tid, ThreadInfo &epocheInfo, trans_info_t* t_info);
     };
 }
 #endif //ART_OPTIMISTICLOCK_COUPLING_N_H
