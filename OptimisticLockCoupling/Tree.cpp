@@ -48,11 +48,11 @@ namespace ART_OLC {
 		return lookup(k, threadEpocheInfo, nullptr);
 	}
 
-    TID Tree::lookup(const Key &k, ThreadInfo &threadEpocheInfo, trans_info* t_info) const {
+    TID Tree::lookup(const Key &k, ThreadInfo &threadEpocheInfo, trans_info_t* t_info) const {
         return lookup(k, threadEpocheInfo, t_info, nullptr);
     }
 
-    TID Tree::lookup(const Key &k, ThreadInfo &threadEpocheInfo, trans_info* t_info, N* startNode) const {
+    TID Tree::lookup(const Key &k, ThreadInfo &threadEpocheInfo, trans_info_t* t_info, N* startNode) const {
 		EpocheGuardReadonly epocheGuard(threadEpocheInfo);
         restart:
         bool needRestart = false;
@@ -165,6 +165,12 @@ namespace ART_OLC {
 
     bool Tree::lookupRange(const Key &start, const Key &end, Key &continueKey, TID result[],
                                 std::size_t resultSize, std::size_t &resultsFound, ThreadInfo &threadEpocheInfo) const {
+       return lookupRange(start, end, continueKey, result, resultSize, resultsFound, threadEpocheInfo, nullptr); 
+    }
+
+    bool Tree::lookupRange(const Key &start, const Key &end, Key &continueKey, TID result[],
+                                std::size_t resultSize, std::size_t &resultsFound, ThreadInfo &threadEpocheInfo, trans_info_range_t* t_info) const {
+        bool transactional = (t_info != nullptr);
         for (uint32_t i = 0; i < std::min(start.getKeyLen(), end.getKeyLen()); ++i) {
             if (start[i] > end[i]) {
                 resultsFound = 0;
@@ -175,7 +181,8 @@ namespace ART_OLC {
         }
         EpocheGuard epocheGuard(threadEpocheInfo);
         TID toContinue = 0;
-        std::function<void(const N *)> copy = [&result, &resultSize, &resultsFound, &toContinue, &copy](const N *node) {
+        
+        std::function<void(const N *, const N*, uint64_t)> copy = [&result, &resultSize, &resultsFound, &toContinue, &copy, transactional, &t_info](const N *node, const N* parentNode, uint64_t vers) {
             if (N::isLeaf(node)) {
                 if (resultsFound == resultSize) {
                     toContinue = N::getLeaf(node);
@@ -183,13 +190,17 @@ namespace ART_OLC {
                 }
                 result[resultsFound] = N::getLeaf(node);
                 resultsFound++;
+                if(transactional){
+                    t_info->addKeyRS(N::getLeaf(node)); // add key in the read set - this is implemented inside TART
+                    t_info->addNodeNS(parentNode, vers); // add parent node together with its version in the node set - this is implemented inside TART
+                }
             } else {
                 std::tuple<uint8_t, N *> children[256];
                 uint32_t childrenCount = 0;
-                N::getChildren(node, 0u, 255u, children, childrenCount);
+                uint64_t v = N::getChildren(node, 0u, 255u, children, childrenCount);
                 for (uint32_t i = 0; i < childrenCount; ++i) {
                     const N *n = std::get<1>(children[i]);
-                    copy(n);
+                    copy(n, node, v);
                     if (toContinue != 0) {
                         break;
                     }
@@ -199,7 +210,7 @@ namespace ART_OLC {
         std::function<void(N *, uint8_t, uint32_t, const N *, uint64_t)> findStart = [&copy, &start, &findStart, &toContinue, this](
                 N *node, uint8_t nodeK, uint32_t level, const N *parentNode, uint64_t vp) {
             if (N::isLeaf(node)) {
-                copy(node);
+                copy(node, parentNode, vp);
                 return;
             }
             uint64_t v;
@@ -229,7 +240,7 @@ namespace ART_OLC {
                         return;
                     }
                     if (N::isLeaf(node)) {
-                        copy(node);
+                        copy(node, parentNode, vp);
                         return;
                     }
                     goto readAgain;
@@ -240,7 +251,7 @@ namespace ART_OLC {
 
             switch (prefixResult) {
                 case PCCompareResults::Bigger:
-                    copy(node);
+                    copy(node, parentNode, vp);
                     break;
                 case PCCompareResults::Equal: {
                     uint8_t startLevel = (start.getKeyLen() > level) ? start[level] : 0;
@@ -253,7 +264,7 @@ namespace ART_OLC {
                         if (k == startLevel) {
                             findStart(n, k, level + 1, node, v);
                         } else if (k > startLevel) {
-                            copy(n);
+                            copy(n, node, v);
                         }
                         if (toContinue != 0) {
                             break;
@@ -305,7 +316,7 @@ namespace ART_OLC {
             }
             switch (prefixResult) {
                 case PCCompareResults::Smaller:
-                    copy(node);
+                    copy(node, parentNode, vp);
                     break;
                 case PCCompareResults::Equal: {
                     uint8_t endLevel = (end.getKeyLen() > level) ? end[level] : 255;
@@ -318,7 +329,7 @@ namespace ART_OLC {
                         if (k == endLevel) {
                             findEnd(n, k, level + 1, node, v);
                         } else if (k < endLevel) {
-                            copy(n);
+                            copy(n, node, v);
                         }
                         if (toContinue != 0) {
                             break;
@@ -364,7 +375,7 @@ namespace ART_OLC {
                     return false;
                 }
                 case PCEqualsResults::Contained: {
-                    copy(node);
+                    copy(node, parentNode, vp);
                     break;
                 }
                 case PCEqualsResults::BothMatch: {
@@ -380,7 +391,7 @@ namespace ART_OLC {
                             if (k == startLevel) {
                                 findStart(n, k, level + 1, node, v);
                             } else if (k > startLevel && k < endLevel) {
-                                copy(n);
+                                copy(n, node, v);
                             } else if (k == endLevel) {
                                 findEnd(n, k, level + 1, node, v);
                             }
@@ -422,12 +433,12 @@ namespace ART_OLC {
 		insert(k, tid, epocheInfo, nullptr);
 	}
 
-    void Tree::insert(const Key &k, TID tid, ThreadInfo &epocheInfo, trans_info* t_info) {
+    void Tree::insert(const Key &k, TID tid, ThreadInfo &epocheInfo, trans_info_t* t_info) {
         EpocheGuard epocheGuard(epocheInfo);
         restart:
         bool needRestart = false;
         if(t_info != nullptr){
-            bzero(t_info, sizeof(trans_info));
+            bzero(t_info, sizeof(trans_info_t));
         }
 
         N *node = nullptr;
@@ -650,7 +661,7 @@ namespace ART_OLC {
         remove(k, tid, threadInfo, nullptr);
     }
 
-    void Tree::remove(const Key &k, TID tid, ThreadInfo &threadInfo, trans_info* t_info) {
+    void Tree::remove(const Key &k, TID tid, ThreadInfo &threadInfo, trans_info_t* t_info) {
         EpocheGuard epocheGuard(threadInfo);
         restart:
         bool needRestart = false;
